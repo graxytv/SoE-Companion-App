@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { emit, listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
-  import { Button, HotkeyInput, ThemeToggle, Toggle } from '../components';
+  import { Button, HotkeyInput, ThemeToggle, Toggle, UpdateButton } from '../components';
   import { settingsStore, itemsDictionaryStore, type HotkeyConfig } from '../stores';
   import { buildHolyGrailItems } from '../lib/holy-grail';
 
@@ -226,6 +226,17 @@
         <span class="setting-hint">Choose the visual style used by the app and overlays.</span>
       </div>
       <ThemeToggle />
+    </div>
+  </div>
+
+  <div class="settings-section">
+    <h2 class="section-title">Updates</h2>
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">App Updates</span>
+        <span class="setting-hint">Check GitHub Releases for a newer SoE Companion build.</span>
+      </div>
+      <UpdateButton />
     </div>
   </div>
 

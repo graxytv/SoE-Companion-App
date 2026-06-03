@@ -7,6 +7,7 @@ export { default as SubTabs } from './SubTabs.svelte';
 export { default as HotkeyInput } from './HotkeyInput.svelte';
 export { default as ThemeToggle } from './ThemeToggle.svelte';
 export { default as SetupWizard } from './SetupWizard.svelte';
+export { default as UpdateButton } from './UpdateButton.svelte';
 
 // Notification components
 export { default as Notification } from './Notification.svelte';

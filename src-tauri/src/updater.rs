@@ -25,8 +25,8 @@ use http::header::{HeaderValue, ACCEPT};
 
 use crate::logger::{error as log_error, info as log_info};
 
-const REPO_OWNER: &str = "";
-const REPO_NAME: &str = "";
+const REPO_OWNER: &str = "graxytv";
+const REPO_NAME: &str = "SoE-Companion-0.9";
 const ASSET_NAME: &str = "soe-companion.exe";
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -135,7 +135,10 @@ fn check_inner() -> Result<UpdateCheckResult, String> {
     // Pick the newest stable release (no prerelease suffix, e.g. "1.7.0-beta.1").
     let latest = releases
         .iter()
-        .filter_map(|r| semver::Version::parse(&r.version).ok().map(|v| (v, r)))
+        .filter_map(|r| {
+            let version = r.version.trim_start_matches('v');
+            semver::Version::parse(version).ok().map(|v| (v, r))
+        })
         .filter(|(v, _)| v.pre.is_empty())
         .max_by(|(a, _), (b, _)| a.cmp(b));
 
