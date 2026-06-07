@@ -20,6 +20,7 @@
     is_hellforged?: boolean;
     isHellforged?: boolean;
     is_new_grail?: boolean;
+    new_grail_label?: string;
     gsf_needed_by?: string[];
     filter?: NotificationFilter | null;
     exiting?: boolean;

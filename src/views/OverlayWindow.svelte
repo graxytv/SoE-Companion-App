@@ -23,6 +23,7 @@
     cleanTrackedItemName,
     holyGrailCategoryLabel,
     holyGrailCategoryProgress,
+    type HolyGrailFoundEntry,
     holyGrailItemFromDrop,
     inferHolyGrailCategory,
     holyGrailProgress,
@@ -35,10 +36,21 @@
     unlockedAchievementCount,
     type AchievementUnlockEntry,
   } from '../lib/achievements';
-  import { findItemSoundRuleForDrop } from '../lib/item-sounds';
+  import { findItemSoundRuleForDrop, materialNameFromDrop } from '../lib/item-sounds';
   import { MATERIAL_TRACKER_NAMES, materialTrackerNameFromDrop } from '../lib/material-tracker';
   import { OVERLAY_LAYOUT_WINDOWS, type OverlayLayoutKind } from '../lib/overlay-layout';
-  import { fateCardTrackerRows } from '../lib/soe-13-items';
+  import {
+    fateCardTrackerRows,
+    isSoe13EssenceCode,
+    SOE_13_ASCENDANCY_ITEMS,
+    SOE_13_ESSENCE_ITEMS,
+    SOE_13_GENERAL_MATERIAL_ITEMS,
+    SOE_13_HATRED_ORB_ITEMS,
+    SOE_13_UNIQUE_BASE_CODES,
+    SOE_13_UNIQUE_ITEMS,
+    soe13ItemNameFromCode,
+    soe13ListContains,
+  } from '../lib/soe-13-items';
 
   interface Props {
     mode?: 'game' | 'tracker';
@@ -110,6 +122,7 @@
     source?: string;
     name_source?: string;
     is_new_grail?: boolean;
+    new_grail_label?: string;
     gsf_needed_by?: string[];
     seed?: number;
     filter?: NotificationFilter | null;
@@ -131,6 +144,8 @@
     exiting: false,
   };
   const overlayLayoutAchievementPreviewName = 'Complete the Rune Grail Category';
+  const soe13UniqueBaseCodeSet = new Set<string>(SOE_13_UNIQUE_BASE_CODES);
+  let syntheticNotificationId = -1;
 
   let items = $state<ItemWithState[]>([]);
   let achievementPopups = $state<Array<AchievementUnlockEntry & { popupId: string; exiting?: boolean }>>([]);
@@ -808,6 +823,90 @@
     return cleanTrackedItemName(name);
   }
 
+  function dropItemCode(item: ItemDrop): string {
+    return String(item.item_code || item.itemCode || '').trim().toLowerCase();
+  }
+
+  function soe13DropNames(item: ItemDrop): string[] {
+    return [
+      item.canonical_name,
+      item.canonicalName,
+      item.name,
+      item.base_name,
+      item.category ?? '',
+    ]
+      .map((value) => cleanTrackedItemName(value ?? ''))
+      .filter(Boolean);
+  }
+
+  function soe13ListMatchesDrop(list: readonly string[], item: ItemDrop): boolean {
+    return soe13DropNames(item).some((name) => soe13ListContains(list, name));
+  }
+
+  function soe13CodeDisplayName(item: ItemDrop): string | null {
+    const code = dropItemCode(item);
+    const codeName = soe13ItemNameFromCode(code);
+    if (codeName) return codeName;
+    if (!isSoe13EssenceCode(code)) return null;
+    const essenceName = soe13DropNames(item).find((name) => !isPlaceholderItemName(name));
+    return essenceName || 'Essence';
+  }
+
+  function isSoe13UniqueNotificationDrop(item: ItemDrop): boolean {
+    const quality = String(item.quality ?? '').toLowerCase();
+    if (quality !== 'unique') return false;
+    return soe13UniqueBaseCodeSet.has(dropItemCode(item)) || soe13ListMatchesDrop(SOE_13_UNIQUE_ITEMS, item);
+  }
+
+  function isSoe13CurrencyMaterialNotificationDrop(item: ItemDrop): boolean {
+    const code = dropItemCode(item);
+    if (/^fa\d{2}$/i.test(code)) return false;
+    if (soe13ItemNameFromCode(code) || isSoe13EssenceCode(code)) return true;
+    return (
+      soe13ListMatchesDrop(SOE_13_GENERAL_MATERIAL_ITEMS, item) ||
+      soe13ListMatchesDrop(SOE_13_HATRED_ORB_ITEMS, item) ||
+      soe13ListMatchesDrop(SOE_13_ESSENCE_ITEMS, item) ||
+      soe13ListMatchesDrop(SOE_13_ASCENDANCY_ITEMS, item)
+    );
+  }
+
+  function shouldShowSoe13DropNotification(item: ItemDrop): boolean {
+    return (
+      isSoe13UniqueNotificationDrop(item) ||
+      isSoe13CurrencyMaterialNotificationDrop(item)
+    );
+  }
+
+  function showFateCardGrailCompletedNotification(entry: HolyGrailFoundEntry): void {
+    if (mode !== 'game') return;
+    if (entry.category !== 'fateCards') return;
+    nudgeTrackerOverlayRender();
+    emitDropTrackerStateSnapshot();
+    if (!holyGrailNewItemNotificationEnabled) return;
+
+    syntheticNotificationId -= 1;
+    const displayItem: ItemDrop = {
+      unit_id: syntheticNotificationId,
+      class: 0,
+      quality: 'Fate Card',
+      name: entry.name,
+      base_name: entry.name,
+      canonical_name: entry.name,
+      stats: '',
+      is_ethereal: false,
+      is_identified: true,
+      category: 'Fate Cards',
+      source: 'fate-card-full-stack',
+      is_new_grail: true,
+      new_grail_label: 'New Grail Fate Card Stack',
+      filter: { color: 'gold', sound: null, display_stats: false },
+    };
+    addItem(displayItem, notificationDuration);
+    if (holyGrailNewItemSoundSlot != null) {
+      playSound(holyGrailNewItemSoundSlot, soundVolume * holyGrailNewItemSoundVolume);
+    }
+  }
+
   function trackedItemDisplayName(item: ItemDrop): string {
     if (isUnidentifiedUniqueSetDrop(item)) {
       return `Unidentified ${cleanTrackedItemName(item.base_name || item.name || 'item')}`;
@@ -815,6 +914,10 @@
     const codeOnlyGrailItem = holyGrailItemFromDrop(item);
     if (codeOnlyGrailItem && (item.item_code || item.itemCode)) {
       return codeOnlyGrailItem.name;
+    }
+    const soe13CodeName = soe13CodeDisplayName(item);
+    if (soe13CodeName && (!item.name || isPlaceholderItemName(item.name))) {
+      return soe13CodeName;
     }
     const canonicalName = cleanTrackedItemName(item.canonical_name || item.canonicalName || '');
     if (canonicalName) return canonicalTrackedItemName(canonicalName, inferHolyGrailCategory(item));
@@ -878,11 +981,13 @@
     const displayName = exactNameTrusted
       ? trackedItemDisplayName(item)
       : `Unverified ${cleanTrackedItemName(item.canonical_name || item.canonicalName || item.base_name || item.name || item.quality || 'item')}`;
+    const trackerMaterialName = materialTrackerNameFromDrop(item);
+    const matchedMaterialName = materialNameFromDrop(item);
     const materialName =
       materialAchievementNameFromDrop(item.canonical_name || item.canonicalName) ??
       materialAchievementNameFromDrop(item.base_name) ??
-      materialAchievementNameFromDrop(displayName);
-    const trackerMaterialName = materialTrackerNameFromDrop(item);
+      materialAchievementNameFromDrop(displayName) ??
+      materialAchievementNameFromDrop(matchedMaterialName);
     const grailDropItem = holyGrailItemFromDrop(item);
     const fateCardName = grailDropItem?.category === 'fateCards' ? grailDropItem.name : null;
     if (categories.length === 0 && !materialName && !trackerMaterialName && !fateCardName) return;
@@ -1065,11 +1170,15 @@
       const item = event.payload;
       const identifyInventoryEvent = isIdentifyInventoryEvent(item);
       const unidentifiedUniqueSet = isUnidentifiedUniqueSetDrop(item);
-      const allowNotification = !unidentifiedUniqueSet || notifyUnidentifiedUniqueSetDrops;
+      const hasFilterNotification = item.filter != null;
+      const soe13DropNotification = shouldShowSoe13DropNotification(item);
+      const allowNotification = !unidentifiedUniqueSet || notifyUnidentifiedUniqueSetDrops || soe13DropNotification;
       const isNewGrailItem = recordHolyGrailDrop(item);
       const gsfMatches = gsfMatchesForDrop(item);
       const gsfNeededBy = gsfNotificationEnabled ? summarizeGsfNeededBy(gsfMatches) : [];
       const shouldShowVisualNotification =
+        hasFilterNotification ||
+        soe13DropNotification ||
         (holyGrailNewItemNotificationEnabled && isNewGrailItem) ||
         gsfNeededBy.length > 0 ||
         (unidentifiedUniqueSet && notifyUnidentifiedUniqueSetDrops);
@@ -1109,6 +1218,10 @@
     listen<AchievementUnlockEntry>('achievement-unlocked', (event) => {
       if (mode !== 'game') return;
       showAchievementPopup(event.payload);
+    }).then(u => unlisteners.push(u));
+
+    listen<HolyGrailFoundEntry>('holy-grail-item-completed', (event) => {
+      showFateCardGrailCompletedNotification(event.payload);
     }).then(u => unlisteners.push(u));
 
     const testAchievementPopup = (event: Event) => {

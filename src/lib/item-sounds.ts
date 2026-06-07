@@ -14,6 +14,7 @@ import {
   SOE_13_FATE_CARD_ITEMS,
   SOE_13_ITEM_ALIASES,
   SOE_13_MATERIAL_ITEMS,
+  soe13ItemNameFromCode,
 } from './soe-13-items';
 
 export type ItemSoundCategory = 'unique' | 'hellforged' | 'set' | 'runeword' | 'rune' | 'fateCard' | 'essence' | 'material' | 'custom';
@@ -269,6 +270,12 @@ function namesForDrop(item: DropTrackerItemLike): string[] {
 }
 
 export function materialNameFromDrop(item: DropTrackerItemLike): string | null {
+  const codeName = soe13ItemNameFromCode(item.item_code || item.itemCode);
+  if (codeName) {
+    const codeMaterial = MATERIAL_NAMES.find((material) => normalizeHolyGrailKey(material) === normalizeHolyGrailKey(codeName));
+    if (codeMaterial) return codeMaterial;
+  }
+
   const dropNames = namesForDrop(item);
   if (dropNames.length === 0) return null;
   const haystack = normalizedWordText(dropNames.join(' '));
@@ -326,6 +333,12 @@ export function findItemSoundRuleForDrop(
   const rune = runeNameFromDrop(item);
   if (rune) {
     const rule = normalizedRules[itemSoundKey('rune', rune)];
+    if (rule?.soundSlot != null) return rule;
+  }
+
+  const material = materialNameFromDrop(item);
+  if (material) {
+    const rule = normalizedRules[itemSoundKey('material', material)];
     if (rule?.soundSlot != null) return rule;
   }
 

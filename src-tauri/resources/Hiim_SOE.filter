@@ -116,11 +116,11 @@ ItemDisplay[(fa55 OR fa56 OR fa57 OR fa58)]: %MAP-4A%%SOUNDID-4715%%DOT-68%%GREE
 // T5 Fate Cards
 ItemDisplay[(fa59 OR fa60 OR fa61 OR fa62 OR fa63)]: %MAP-4A%%SOUNDID-4715%%DOT-68%%TAN%[T5 Fate] %NAME%{%NAME%}
 // Base Essences and Essence of Insanity
-ItemDisplay[(es16 OR es59 OR es25 OR es32 OR es10 OR es50 OR es22 OR es41 OR es07 OR es38 OR es56 OR es35 OR es44 OR es04 OR es47 OR es28 OR es31)]: %MAP-4A%%SOUNDID-4715%%DOT-68%%TEAL%[Essence] %NAME%{%NAME%}
+ItemDisplay[(es01 OR es16 OR es59 OR es25 OR es32 OR es10 OR es13 OR es50 OR es19 OR es22 OR es41 OR es07 OR es38 OR es56 OR es35 OR es44 OR es04 OR es47 OR es28 OR es53 OR es31)]: %MAP-4A%%SOUNDID-4715%%DOT-68%%TEAL%[Essence] %NAME%{%NAME%}
 // Greater Essences
-ItemDisplay[(es17 OR es60 OR es26 OR es33 OR es11 OR es51 OR es23 OR es42 OR es08 OR es39 OR es57 OR es36 OR es45 OR es05 OR es48 OR es29)]: %MAP-4A%%SOUNDID-4715%%BORDER-68%%PURPLE%[Greater Essence] %NAME%{%NAME%}
+ItemDisplay[(es02 OR es17 OR es60 OR es26 OR es33 OR es11 OR es14 OR es51 OR es20 OR es23 OR es42 OR es08 OR es39 OR es57 OR es36 OR es45 OR es05 OR es48 OR es29 OR es54)]: %MAP-4A%%SOUNDID-4715%%BORDER-68%%PURPLE%[Greater Essence] %NAME%{%NAME%}
 // Perfect Essences
-ItemDisplay[(es18 OR es61 OR es27 OR es34 OR es12 OR es52 OR es24 OR es43 OR es09 OR es40 OR es58 OR es37 OR es46 OR es06 OR es49 OR es30)]: %MAP-4A%%SOUNDID-4719%%BORDER-9B%%GOLD%[Perfect Essence] %NAME%{%NAME%}
+ItemDisplay[(es03 OR es18 OR es61 OR es27 OR es34 OR es12 OR es15 OR es52 OR es21 OR es24 OR es43 OR es09 OR es40 OR es58 OR es37 OR es46 OR es06 OR es49 OR es30 OR es55)]: %MAP-4A%%SOUNDID-4719%%BORDER-9B%%GOLD%[Perfect Essence] %NAME%{%NAME%}
 
 // Mythic jewel ---------------------------------------------------------
 

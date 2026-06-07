@@ -895,6 +895,21 @@ class SettingsStore {
     return next ?? found;
   }
 
+  private newlyCompletedFateCardEntries(
+    previousFound: HolyGrailFoundMap,
+    nextFound: HolyGrailFoundMap,
+  ): HolyGrailFoundEntry[] {
+    return Object.values(nextFound).filter(
+      (entry) => entry.category === "fateCards" && !previousFound[entry.key],
+    );
+  }
+
+  private emitCompletedFateCardGrailEntries(entries: readonly HolyGrailFoundEntry[]): void {
+    for (const entry of entries) {
+      void emit("holy-grail-item-completed", entry);
+    }
+  }
+
   private pruneIncompleteFateCardStacks(
     found: HolyGrailFoundMap,
     counts: FateCardCounts,
@@ -1026,9 +1041,12 @@ class SettingsStore {
     const fateCardDropCounts = this.normalizeFateCardCounts(
       (settings as Partial<AppSettings>).fateCardDropCounts,
     );
-    const holyGrailFound = this.pruneIncompleteFateCardStacks(
-      this.normalizeHolyGrailFound(settings.holyGrailFound),
-      fateCardCounts,
+    const holyGrailFound = this.withCompletedFateCardStacks(
+      this.pruneIncompleteFateCardStacks(
+        this.normalizeHolyGrailFound(settings.holyGrailFound),
+        fateCardDropCounts,
+      ),
+      fateCardDropCounts,
     );
     return {
       ...settings,
@@ -2435,13 +2453,25 @@ class SettingsStore {
     if (category === "fateCards") {
       const card = fateCardInfo(name);
       if (card) {
-        this.setFateCardCount(card.name, found ? card.amountRequired : 0, { updateGrail: found });
-        if (!found) {
-          const nextFound = { ...this._settings.holyGrailFound };
+        const nextFound = { ...this._settings.holyGrailFound };
+        const entry = this.completedFateCardFoundEntry(card.name);
+        if (found && entry) {
+          nextFound[entry.key] = nextFound[entry.key] ?? entry;
+        } else {
           delete nextFound[key];
-          this.set("holyGrailFound", nextFound);
-          void this.backupHolyGrailFoundNow(nextFound);
+          if (entry) delete nextFound[entry.key];
         }
+        const nextDropCounts = this.normalizeFateCardCounts({
+          ...this._settings.fateCardDropCounts,
+          [card.name]: found
+            ? Math.max(this._settings.fateCardDropCounts[card.name] ?? 0, card.amountRequired)
+            : 0,
+        });
+        this.update({
+          holyGrailFound: nextFound,
+          fateCardDropCounts: nextDropCounts,
+        });
+        void this.backupHolyGrailFoundNow(nextFound);
         return;
       }
     }
@@ -2463,7 +2493,7 @@ class SettingsStore {
   resetHolyGrail(): void {
     this.update({
       holyGrailFound: {},
-      fateCardCounts: {},
+      fateCardDropCounts: {},
     });
   }
 
@@ -2481,24 +2511,13 @@ class SettingsStore {
 
   setFateCardCounts(counts: FateCardCounts): void {
     const normalizedCounts = this.normalizeFateCardCounts(counts);
-    const nextFound = this.withCompletedFateCardStacks(
-      this.pruneIncompleteFateCardStacks(this._settings.holyGrailFound, normalizedCounts),
-      normalizedCounts,
-    );
-    const foundChanged = nextFound !== this._settings.holyGrailFound;
-    this.update({
-      fateCardCounts: normalizedCounts,
-      holyGrailFound: nextFound,
-    });
-    if (foundChanged) {
-      void this.backupHolyGrailFoundNow(nextFound);
-    }
+    this.set("fateCardCounts", normalizedCounts);
   }
 
   setFateCardCount(
     name: string,
     count: number,
-    options: { updateGrail?: boolean } = {},
+    _options: { updateGrail?: boolean } = {},
   ): void {
     const card = fateCardInfo(name);
     if (!card) return;
@@ -2506,29 +2525,13 @@ class SettingsStore {
       ...this._settings.fateCardCounts,
       [card.name]: Math.max(0, Math.floor(count || 0)),
     });
-    let nextFound = this._settings.holyGrailFound;
-    if (options.updateGrail !== false && (nextCounts[card.name] ?? 0) >= card.amountRequired) {
-      const entry = this.completedFateCardFoundEntry(card.name);
-      if (entry && !nextFound[entry.key]) {
-        nextFound = {
-          ...nextFound,
-          [entry.key]: entry,
-        };
-      }
-    }
-    const foundChanged = nextFound !== this._settings.holyGrailFound;
-    this.update({
-      fateCardCounts: nextCounts,
-      holyGrailFound: nextFound,
-    });
-    if (foundChanged) {
-      void this.backupHolyGrailFoundNow(nextFound);
-    }
+    this.set("fateCardCounts", nextCounts);
   }
 
   recordFateCardDrop(name: string): void {
     const card = fateCardInfo(name);
     if (!card) return;
+    const previousFound = this._settings.holyGrailFound;
     const nextAchievementStats = normalizeAchievementStats({
       ...this._settings.achievementStats,
       fateCardsFound: (this._settings.achievementStats.fateCardsFound ?? 0) + 1,
@@ -2539,10 +2542,18 @@ class SettingsStore {
       ...this._settings.fateCardDropCounts,
       [card.name]: (this._settings.fateCardDropCounts[card.name] ?? 0) + 1,
     });
+    const nextFound = this.withCompletedFateCardStacks(previousFound, nextDropCounts);
+    const newlyCompletedEntries = this.newlyCompletedFateCardEntries(previousFound, nextFound);
+    const foundChanged = nextFound !== previousFound;
     this.update({
       achievementStats: nextAchievementStats,
       fateCardDropCounts: nextDropCounts,
+      holyGrailFound: nextFound,
     });
+    if (foundChanged) {
+      void this.backupHolyGrailFoundNow(nextFound);
+    }
+    this.emitCompletedFateCardGrailEntries(newlyCompletedEntries);
   }
 
   resetDropTrackerOverlayPositions(): void {
@@ -2788,7 +2799,7 @@ class SettingsStore {
       (category) => current.totalDropsTrackerCategories[category],
     );
 
-    if (dropsCategories.length === 0 && totalCategories.length === 0) return;
+    const shouldRecordDropCounts = dropsCategories.length > 0 || totalCategories.length > 0;
     const runeName = runeNameFromDrop({ name });
     const runeTrackerCounts = runeName
       ? normalizeRuneTrackerCounts({
@@ -2798,15 +2809,20 @@ class SettingsStore {
       : current.runeTrackerCounts;
     const tracksUnique = categories.includes("unique") || categories.includes("hellforged");
     const cleanName = canonicalTrackedItemName(name) || cleanTrackedItemName(name) || "";
+    const isEliteUnique = ELITE_UNIQUE_NAMES.has(cleanName);
     const achievementStats = tracksUnique
       ? normalizeAchievementStats({
           ...current.achievementStats,
           uniqueItemsFound: (current.achievementStats.uniqueItemsFound ?? 0) + 1,
+          eliteUniqueItemsFound:
+            (current.achievementStats.eliteUniqueItemsFound ?? 0) + (isEliteUnique ? 1 : 0),
           firstEliteUniqueName:
             current.achievementStats.firstEliteUniqueName ??
-            (ELITE_UNIQUE_NAMES.has(cleanName) ? cleanName : null),
+            (isEliteUnique ? cleanName : null),
         })
       : current.achievementStats;
+
+    if (!shouldRecordDropCounts && !runeName && !tracksUnique) return;
 
     const recentItem: DropTrackerRecentItem = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -2820,26 +2836,30 @@ class SettingsStore {
     };
 
     this.update({
-      dropsTrackerCounts: normalizeCounts(
-        incrementCounts(
-          current.dropsTrackerCounts,
-          categories,
-          current.dropsTrackerCategories,
-        ),
-      ),
-      totalDropsTrackerCounts: normalizeCounts(
-        incrementCounts(
-          current.totalDropsTrackerCounts,
-          categories,
-          current.totalDropsTrackerCategories,
-        ),
-      ),
+      ...(shouldRecordDropCounts
+        ? {
+            dropsTrackerCounts: normalizeCounts(
+              incrementCounts(
+                current.dropsTrackerCounts,
+                categories,
+                current.dropsTrackerCategories,
+              ),
+            ),
+            totalDropsTrackerCounts: normalizeCounts(
+              incrementCounts(
+                current.totalDropsTrackerCounts,
+                categories,
+                current.totalDropsTrackerCategories,
+              ),
+            ),
+            dropsTrackerRecentItems: [
+              recentItem,
+              ...current.dropsTrackerRecentItems,
+            ].slice(0, 20),
+          }
+        : {}),
       runeTrackerCounts,
       achievementStats,
-      dropsTrackerRecentItems: [
-        recentItem,
-        ...current.dropsTrackerRecentItems,
-      ].slice(0, 20),
     });
   }
 
@@ -2873,6 +2893,22 @@ class SettingsStore {
   }
 
   mergeDropTrackerStateSnapshot(snapshot: DropTrackerStateSnapshot): void {
+    const snapshotFateCardDropCounts = snapshot.fateCardDropCounts
+      ? this.normalizeFateCardCounts(snapshot.fateCardDropCounts)
+      : null;
+    const snapshotHolyGrailFound = snapshot.holyGrailFound
+      ? this.normalizeHolyGrailFound(snapshot.holyGrailFound)
+      : null;
+    const mergedHolyGrailFound =
+      snapshotHolyGrailFound || snapshotFateCardDropCounts
+        ? this.withCompletedFateCardStacks(
+            this.pruneIncompleteFateCardStacks(
+              snapshotHolyGrailFound ?? this._settings.holyGrailFound,
+              snapshotFateCardDropCounts ?? this._settings.fateCardDropCounts,
+            ),
+            snapshotFateCardDropCounts ?? this._settings.fateCardDropCounts,
+          )
+        : null;
     const partial: Partial<AppSettings> = {
       ...(snapshot.dropsTrackerCounts
         ? { dropsTrackerCounts: normalizeCounts(snapshot.dropsTrackerCounts) }
@@ -2892,9 +2928,8 @@ class SettingsStore {
       ...(snapshot.fateCardCounts
         ? { fateCardCounts: this.normalizeFateCardCounts(snapshot.fateCardCounts) }
         : {}),
-      ...(snapshot.fateCardDropCounts
-        ? { fateCardDropCounts: this.normalizeFateCardCounts(snapshot.fateCardDropCounts) }
-        : {}),
+      ...(snapshotFateCardDropCounts ? { fateCardDropCounts: snapshotFateCardDropCounts } : {}),
+      ...(mergedHolyGrailFound ? { holyGrailFound: mergedHolyGrailFound } : {}),
       ...(snapshot.achievementStats
         ? { achievementStats: normalizeAchievementStats(snapshot.achievementStats) }
         : {}),

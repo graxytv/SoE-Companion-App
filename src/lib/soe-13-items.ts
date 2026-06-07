@@ -165,12 +165,15 @@ export const SOE_13_FATE_CARD_INFO = [
 ] as const satisfies readonly Soe13FateCardInfo[];
 
 const ESSENCE_BASES = [
+  'Abrasion',
   'Enhancement',
   'the Mind',
   'Haste',
   'Insulation',
   'Battle',
+  'Electricity',
   'Thawing',
+  'Flames',
   'Grounding',
   'Seeking',
   'Antitoxin',
@@ -181,6 +184,7 @@ const ESSENCE_BASES = [
   'Alacrity',
   'Spite',
   'Ice',
+  'Venom',
 ] as const;
 
 export const SOE_13_ESSENCE_ITEMS = [
@@ -200,6 +204,7 @@ export const SOE_13_ASCENDANCY_ITEMS = [
 
 export const SOE_13_GENERAL_MATERIAL_ITEMS = [
   'Chaos Orb',
+  'Eternal Orb',
   'Orb of Alchemy',
   'Orb of Horizons',
   'Cindersoul Cluster',
@@ -258,6 +263,71 @@ export function soe13ItemAliases(name: string): readonly string[] {
 export function soe13ListContains(list: readonly string[], name: string): boolean {
   const normalized = normalizeSoe13ItemKey(name);
   return list.some((item) => normalizeSoe13ItemKey(item) === normalized || soe13ItemAliases(item).some((alias) => normalizeSoe13ItemKey(alias) === normalized));
+}
+
+const SOE_13_FATE_CARD_CODE_NAMES: Record<string, string> = Object.fromEntries(
+  SOE_13_FATE_CARD_ITEMS.map((name, index) => [`fa${String(index + 1).padStart(2, '0')}`, name]),
+);
+
+const SOE_13_HATRED_ORB_CODE_NAMES: Record<string, string> = Object.fromEntries(
+  SOE_13_HATRED_ORB_ITEMS.map((name, index) => [`hor${index + 1}`, name]),
+);
+
+const SOE_13_BASE_ESSENCE_CODES = [
+  'es01', 'es16', 'es59', 'es25', 'es32', 'es10', 'es13', 'es50', 'es19', 'es22',
+  'es41', 'es07', 'es38', 'es56', 'es35', 'es44', 'es04', 'es47', 'es28', 'es53',
+] as const;
+
+const SOE_13_GREATER_ESSENCE_CODES = [
+  'es02', 'es17', 'es60', 'es26', 'es33', 'es11', 'es14', 'es51', 'es20', 'es23',
+  'es42', 'es08', 'es39', 'es57', 'es36', 'es45', 'es05', 'es48', 'es29', 'es54',
+] as const;
+
+const SOE_13_PERFECT_ESSENCE_CODES = [
+  'es03', 'es18', 'es61', 'es27', 'es34', 'es12', 'es15', 'es52', 'es21', 'es24',
+  'es43', 'es09', 'es40', 'es58', 'es37', 'es46', 'es06', 'es49', 'es30', 'es55',
+] as const;
+
+export const SOE_13_ESSENCE_CODE_NAMES: Record<string, string> = {
+  ...Object.fromEntries(SOE_13_BASE_ESSENCE_CODES.map((code, index) => [code, `Essence of ${ESSENCE_BASES[index]}`])),
+  ...Object.fromEntries(SOE_13_GREATER_ESSENCE_CODES.map((code, index) => [code, `Greater Essence of ${ESSENCE_BASES[index]}`])),
+  ...Object.fromEntries(SOE_13_PERFECT_ESSENCE_CODES.map((code, index) => [code, `Perfect Essence of ${ESSENCE_BASES[index]}`])),
+  es31: 'Essence of Insanity',
+};
+
+export const SOE_13_GENERAL_MATERIAL_CODE_NAMES: Record<string, string> = {
+  csor: 'Chaos Orb',
+  etor: 'Eternal Orb',
+  ooal: 'Orb of Alchemy',
+  oroh: 'Orb of Horizons',
+  hfmx: 'Cindersoul Cluster',
+  lsvl: 'Vial of Lightsong',
+};
+
+export const SOE_13_ASCENDANCY_CODE_NAMES: Record<string, string> = {
+  ascc: 'Ascendancy Cairn',
+  assc: 'Soulstone of Might',
+};
+
+export const SOE_13_ITEM_CODE_NAMES: Record<string, string> = {
+  ...SOE_13_GENERAL_MATERIAL_CODE_NAMES,
+  ...SOE_13_ASCENDANCY_CODE_NAMES,
+  ...SOE_13_ESSENCE_CODE_NAMES,
+  ...SOE_13_HATRED_ORB_CODE_NAMES,
+  ...SOE_13_FATE_CARD_CODE_NAMES,
+};
+
+export const SOE_13_UNIQUE_BASE_CODES = ['smer', 'uts', 'uuc', 'utbe'] as const;
+
+const SOE_13_ESSENCE_CODES = new Set(Object.keys(SOE_13_ESSENCE_CODE_NAMES));
+
+export function soe13ItemNameFromCode(code: string | null | undefined): string | null {
+  return SOE_13_ITEM_CODE_NAMES[String(code ?? '').trim().toLowerCase()] ?? null;
+}
+
+export function isSoe13EssenceCode(code: string | null | undefined): boolean {
+  const normalized = String(code ?? '').trim().toLowerCase();
+  return SOE_13_ESSENCE_CODES.has(normalized);
 }
 
 export function fateCardInfo(name: string | null | undefined): Soe13FateCardInfo | null {

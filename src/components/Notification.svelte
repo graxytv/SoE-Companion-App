@@ -21,6 +21,8 @@
     isHellforged?: boolean;
     is_new_grail?: boolean;
     isNewGrail?: boolean;
+    new_grail_label?: string;
+    newGrailLabel?: string;
     gsf_needed_by?: string[];
     gsfNeededBy?: string[];
     filter?: NotificationFilter | null;
@@ -91,6 +93,7 @@
   const primary = $derived(canonicalTrackedItemName(showTwoLines ? item.name : item.base_name, grailCategory));
   const secondary = $derived(showTwoLines ? canonicalTrackedItemName(item.base_name, grailCategory) : null);
   const isNewGrail = $derived(item.is_new_grail === true || item.isNewGrail === true);
+  const newGrailLabel = $derived(item.new_grail_label || item.newGrailLabel || 'New Grail Item!');
   const gsfNeededBy = $derived(item.gsf_needed_by ?? item.gsfNeededBy ?? []);
   const gsfNeededText = $derived(
     gsfNeededBy.length > 4
@@ -108,7 +111,7 @@
   style:background-color="rgba(var(--notification-bg-rgb, 0, 0, 0), {opacity})"
 >
   {#if isNewGrail}
-    <div class="new-grail-item">**New Item!**</div>
+    <div class="new-grail-item">{newGrailLabel}</div>
   {/if}
   <div class="item-name" style:color={nameColor}>
     {primary}{#if hasBadges}

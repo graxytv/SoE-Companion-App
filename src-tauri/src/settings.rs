@@ -587,7 +587,11 @@ fn default_holy_grail_sub_tab_order() -> Vec<String> {
 fn default_achievement_stats() -> serde_json::Value {
     serde_json::json!({
         "uniqueItemsFound": 0,
+        "eliteUniqueItemsFound": 0,
         "firstEliteUniqueName": null,
+        "materialFinds": {},
+        "fateCardsFound": 0,
+        "tier0FateCardsFound": 0,
         "totalKills": 0,
         "bossKills": {},
         "characterLevels": {},

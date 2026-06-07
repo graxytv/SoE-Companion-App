@@ -14,6 +14,7 @@ import {
   SOE_13_UNIQUE_ITEMS,
   fateCardInfo,
   soe13ItemAliases,
+  soe13ItemNameFromCode,
   soe13ListContains,
 } from "./soe-13-items";
 
@@ -410,6 +411,9 @@ export function holyGrailItemFromDrop(
   if (byCode) return byCode;
   const fateCardByCode = codeOnlyFateCard(item);
   if (fateCardByCode) return fateCardByCode;
+  const soe13NameByCode = soe13ItemNameFromCode(normalizedItemCode(item));
+  const soe13GrailByCode = soe13NameByCode ? findHolyGrailItem(soe13NameByCode) : null;
+  if (soe13GrailByCode) return soe13GrailByCode;
 
   const category = inferHolyGrailCategory(item);
   const name = cleanTrackedItemName(

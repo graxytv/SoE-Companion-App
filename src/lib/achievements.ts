@@ -2,11 +2,11 @@ import { RUNE_NAMES, type RuneName, runeCategory } from './drop-tracker-categori
 import {
   holyGrailCategoryProgress,
   holyGrailProgress,
-  normalizeHolyGrailKey,
   type HolyGrailCategoryKey,
   type HolyGrailFoundEntry,
   type HolyGrailItem,
 } from './holy-grail';
+import { SOE_13_HATRED_ORB_ITEMS } from './soe-13-items';
 
 export type AchievementTier = 'Bronze' | 'Silver' | 'Gold' | 'Legendary';
 export type AchievementCategory =
@@ -36,6 +36,7 @@ export interface AchievementCharacterLevel {
 
 export interface AchievementStats {
   uniqueItemsFound: number;
+  eliteUniqueItemsFound: number;
   firstEliteUniqueName: string | null;
   totalKills: number;
   bossKills: Record<string, number>;
@@ -132,6 +133,7 @@ export const DEFAULT_ACHIEVEMENT_SETTINGS: AchievementSettings = {
 export function defaultAchievementStats(): AchievementStats {
   return {
     uniqueItemsFound: 0,
+    eliteUniqueItemsFound: 0,
     firstEliteUniqueName: null,
     totalKills: 0,
     bossKills: {},
@@ -148,7 +150,12 @@ export function defaultAchievementStats(): AchievementStats {
   };
 }
 
-export const MATERIAL_ACHIEVEMENT_ITEMS = [
+interface MaterialAchievementItem {
+  name: string;
+  aliases?: readonly string[];
+}
+
+export const MATERIAL_ACHIEVEMENT_ITEMS: readonly MaterialAchievementItem[] = [
   { name: 'Black Soulstone', aliases: ['Black Soulstones'] },
   { name: 'Demonic Insignia' },
   { name: 'Flesh of Malic' },
@@ -173,7 +180,7 @@ export const MATERIAL_ACHIEVEMENT_ITEMS = [
     name: 'Tainted Worldstone Shard',
     aliases: ['Tainted World Stone Shard', 'Tainted Worldstone Shards', 'Tainted WSS', 'Corrupted Worldstone Shard', 'cwss'],
   },
-  { name: 'Crystallised Cindersoul' },
+  { name: 'Crystallised Cindersoul', aliases: ['Crystallised Cindersouls', 'Crystallized Cindersoul', 'Crystallized Cindersouls'] },
   { name: 'Demonic Cube' },
   { name: 'Larzuk Puzzlebox', aliases: ["Larzuk's Puzzlebox"] },
   { name: 'Desecration Orb' },
@@ -196,6 +203,7 @@ export const MATERIAL_ACHIEVEMENT_ITEMS = [
   { name: 'Terror of Opulence' },
   { name: 'Terror of Ethereal' },
   { name: 'Terror of Absolute' },
+  ...SOE_13_HATRED_ORB_ITEMS.map((name) => ({ name })),
 ] as const;
 
 function normalizeMaterialText(value: string | null | undefined): string {
@@ -217,7 +225,7 @@ export function materialAchievementNameFromDrop(name: string | null | undefined)
   const normalized = normalizeMaterialText(name);
   if (!normalized) return null;
   for (const item of MATERIAL_ACHIEVEMENT_ITEMS) {
-    const names = [item.name, ...('aliases' in item ? item.aliases : [])];
+    const names = [item.name, ...(item.aliases ?? [])];
     if (names.some((candidate) => normalizeMaterialText(candidate) === normalized)) {
       return item.name;
     }
@@ -290,24 +298,23 @@ function runeGrailComplete(ctx: AchievementContext): number {
   return RUNE_NAMES.every((rune) => (ctx.runeTrackerCounts[rune] ?? 0) > 0) ? 1 : 0;
 }
 
-function grailFindByName(
-  ctx: AchievementContext,
-  name: string,
-  aliases: readonly string[] = [],
-): number {
-  const wanted = new Set([name, ...aliases].map(normalizeHolyGrailKey));
-  return Object.values(ctx.holyGrailFound).some((entry) => wanted.has(normalizeHolyGrailKey(entry.name))) ? 1 : 0;
-}
-
 const uniqueAchievements: AchievementDefinition[] = [
-  { id: 'unique-100', name: 'Find 100 Unique Items', category: 'Unique Finds', tier: 'Bronze', target: 100, progress: (ctx) => ctx.stats.uniqueItemsFound },
-  { id: 'unique-500', name: 'Find 500 Unique Items', category: 'Unique Finds', tier: 'Silver', target: 500, progress: (ctx) => ctx.stats.uniqueItemsFound },
-  { id: 'unique-1000', name: 'Find 1000 Unique Items', category: 'Unique Finds', tier: 'Gold', target: 1000, progress: (ctx) => ctx.stats.uniqueItemsFound },
-  { id: 'unique-5000', name: 'Find 5000 Unique Items', category: 'Unique Finds', tier: 'Legendary', target: 5000, progress: (ctx) => ctx.stats.uniqueItemsFound },
-  { id: 'first-elite-unique', name: 'Find Your First Elite Unique', category: 'Unique Finds', tier: 'Legendary', target: 1, progress: (ctx) => ctx.stats.firstEliteUniqueName ? 1 : 0 },
-  { id: 'unique-horadrim-navigator', name: 'Find Horadrim Navigator', category: 'Unique Finds', tier: 'Legendary', target: 1, progress: (ctx) => grailFindByName(ctx, 'Horadrim Navigator', ['Horadric Navigator']) },
-  { id: 'unique-horadrim-almanac', name: 'Find Horadrim Almanac', category: 'Unique Finds', tier: 'Legendary', target: 1, progress: (ctx) => grailFindByName(ctx, 'Horadrim Almanac', ['Horadric Almanac']) },
-  { id: 'unique-skeleton-key', name: 'Find Skeleton Key', category: 'Unique Finds', tier: 'Legendary', target: 1, progress: (ctx) => grailFindByName(ctx, 'Skeleton Key') },
+  ...[1, 50, 250].map((target) => ({
+    id: `unique-${target}`,
+    name: `Find ${target.toLocaleString()} Unique Item${target === 1 ? '' : 's'}`,
+    category: 'Unique Finds' as const,
+    tier: (target >= 250 ? 'Gold' : target >= 50 ? 'Silver' : 'Bronze') as AchievementTier,
+    target,
+    progress: (ctx: AchievementContext) => ctx.stats.uniqueItemsFound,
+  })),
+  ...[10, 50, 100, 250, 500].map((target) => ({
+    id: `elite-unique-${target}`,
+    name: `Find ${target.toLocaleString()} Elite Unique Item${target === 1 ? '' : 's'}`,
+    category: 'Unique Finds' as const,
+    tier: (target >= 500 ? 'Legendary' : target >= 100 ? 'Gold' : target >= 50 ? 'Silver' : 'Bronze') as AchievementTier,
+    target,
+    progress: (ctx: AchievementContext) => ctx.stats.eliteUniqueItemsFound,
+  })),
 ];
 
 const killAchievements: AchievementDefinition[] = [
@@ -383,12 +390,12 @@ const grailAchievements: AchievementDefinition[] = [
 ];
 
 const runeAchievements: AchievementDefinition[] = [
-  { id: 'runes-100', name: 'Find 100 Total Runes', category: 'Runes', tier: 'Bronze', target: 100, progress: runeTotal },
-  { id: 'runes-500', name: 'Find 500 Total Runes', category: 'Runes', tier: 'Silver', target: 500, progress: runeTotal },
-  { id: 'runes-1000', name: 'Find 1000 Total Runes', category: 'Runes', tier: 'Gold', target: 1000, progress: runeTotal },
-  { id: 'first-high-rune', name: 'Find Your First High Rune', category: 'Runes', tier: 'Gold', target: 1, progress: highRuneTotal },
-  { id: 'first-zod', name: 'Find Your First Zod', category: 'Runes', tier: 'Legendary', target: 1, progress: (ctx) => ctx.runeTrackerCounts.Zod ?? 0 },
-  { id: 'two-high-runes-one-run', name: 'Find 2 High Runes In One Run', category: 'Runes', tier: 'Legendary', target: 2, progress: (ctx) => highRuneTotal(ctx), description: 'Currently uses tracked high-rune progress until per-run high-rune history is expanded.' },
+  { id: 'first-rune', name: 'Find Your First Rune', category: 'Runes', tier: 'Bronze', target: 1, progress: runeTotal },
+  { id: 'runes-10', name: 'Find 10 Total Runes', category: 'Runes', tier: 'Bronze', target: 10, progress: runeTotal },
+  { id: 'runes-50', name: 'Find 50 Total Runes', category: 'Runes', tier: 'Silver', target: 50, progress: runeTotal },
+  { id: 'high-runes-10', name: 'Find 10 High Runes', category: 'Runes', tier: 'Gold', target: 10, progress: highRuneTotal },
+  { id: 'high-runes-50', name: 'Find 50 High Runes', category: 'Runes', tier: 'Legendary', target: 50, progress: highRuneTotal },
+  { id: 'high-runes-100', name: 'Find 100 High Runes', category: 'Runes', tier: 'Legendary', target: 100, progress: highRuneTotal },
 ];
 
 const fateCardAchievements: AchievementDefinition[] = [
@@ -410,14 +417,30 @@ const fateCardAchievements: AchievementDefinition[] = [
   })),
 ];
 
-const materialAchievements: AchievementDefinition[] = MATERIAL_ACHIEVEMENT_ITEMS.map((item) => ({
-  id: `material-${materialAchievementKey(item.name)}`,
-  name: `Find ${item.name}`,
-  category: 'Materials' as const,
-  tier: 'Bronze' as const,
-  target: 1,
-  progress: (ctx: AchievementContext) => ctx.stats.materialFinds[materialAchievementKey(item.name)] ?? 0,
-}));
+function materialAchievementTargets(item: MaterialAchievementItem): readonly number[] {
+  if (/^Terror of /i.test(item.name)) return [10, 50, 100, 500];
+  if (item.name === 'Crystallised Cindersoul') return [50, 100, 500, 1000, 5000, 10000];
+  if (SOE_13_HATRED_ORB_ITEMS.includes(item.name as (typeof SOE_13_HATRED_ORB_ITEMS)[number])) return [1, 50, 100, 500, 1000];
+  return [50, 100, 500, 1000];
+}
+
+function materialAchievementTier(target: number): AchievementTier {
+  if (target >= 1000) return 'Legendary';
+  if (target >= 500) return 'Gold';
+  if (target >= 100) return 'Silver';
+  return 'Bronze';
+}
+
+const materialAchievements: AchievementDefinition[] = MATERIAL_ACHIEVEMENT_ITEMS.flatMap((item) =>
+  materialAchievementTargets(item).map((target) => ({
+    id: `material-${materialAchievementKey(item.name)}-${target}`,
+    name: `Find ${target.toLocaleString()} ${item.name}`,
+    category: 'Materials' as const,
+    tier: materialAchievementTier(target),
+    target,
+    progress: (ctx: AchievementContext) => ctx.stats.materialFinds[materialAchievementKey(item.name)] ?? 0,
+  })),
+);
 
 export const ACHIEVEMENTS: AchievementDefinition[] = [
   ...uniqueAchievements,
@@ -453,6 +476,10 @@ export function normalizeAchievementStats(value: unknown): AchievementStats {
     : [];
   return {
     uniqueItemsFound: Math.max(0, Math.floor(Number(input.uniqueItemsFound) || 0)),
+    eliteUniqueItemsFound: Math.max(
+      0,
+      Math.floor(Number(input.eliteUniqueItemsFound) || (input.firstEliteUniqueName ? 1 : 0)),
+    ),
     firstEliteUniqueName: typeof input.firstEliteUniqueName === 'string' && input.firstEliteUniqueName.trim() ? input.firstEliteUniqueName : null,
     totalKills: Math.max(0, Math.floor(Number(input.totalKills) || 0)),
     bossKills: Object.fromEntries(
@@ -522,6 +549,7 @@ export function unlockedAchievementCount(progress: AchievementProgress[]): numbe
 }
 
 export function achievementDetail(id: string, ctx: AchievementContext): string | null {
-  if (id === 'first-elite-unique') return ctx.stats.firstEliteUniqueName;
+  void id;
+  void ctx;
   return null;
 }

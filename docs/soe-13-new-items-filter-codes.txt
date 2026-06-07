@@ -78,12 +78,15 @@ General Currency/Material	Orb of Alchemy	ooal
 General Currency/Material	Orb of Horizons	oroh
 General Currency/Material	Cindersoul Cluster	hfmx
 General Currency/Material	Vial of Lightsong	lsvl
+Essence	Essence of Abrasion	es01
 Essence	Essence of Enhancement	es16
 Essence	Essence of the Mind	es59
 Essence	Essence of Haste	es25
 Essence	Essence of Insulation	es32
 Essence	Essence of Battle	es10
+Essence	Essence of Electricity	es13
 Essence	Essence of Thawing	es50
+Essence	Essence of Flames	es19
 Essence	Essence of Grounding	es22
 Essence	Essence of Seeking	es41
 Essence	Essence of Antitoxin	es07
@@ -94,12 +97,16 @@ Essence	Essence of Sorcery	es44
 Essence	Essence of Alacrity	es04
 Essence	Essence of Spite	es47
 Essence	Essence of Ice	es28
+Essence	Essence of Venom	es53
+Essence	Greater Essence of Abrasion	es02
 Essence	Greater Essence of Enhancement	es17
 Essence	Greater Essence of the Mind	es60
 Essence	Greater Essence of Haste	es26
 Essence	Greater Essence of Insulation	es33
 Essence	Greater Essence of Battle	es11
+Essence	Greater Essence of Electricity	es14
 Essence	Greater Essence of Thawing	es51
+Essence	Greater Essence of Flames	es20
 Essence	Greater Essence of Grounding	es23
 Essence	Greater Essence of Seeking	es42
 Essence	Greater Essence of Antitoxin	es08
@@ -110,12 +117,16 @@ Essence	Greater Essence of Sorcery	es45
 Essence	Greater Essence of Alacrity	es05
 Essence	Greater Essence of Spite	es48
 Essence	Greater Essence of Ice	es29
+Essence	Greater Essence of Venom	es54
+Essence	Perfect Essence of Abrasion	es03
 Essence	Perfect Essence of Enhancement	es18
 Essence	Perfect Essence of the Mind	es61
 Essence	Perfect Essence of Haste	es27
 Essence	Perfect Essence of Insulation	es34
 Essence	Perfect Essence of Battle	es12
+Essence	Perfect Essence of Electricity	es15
 Essence	Perfect Essence of Thawing	es52
+Essence	Perfect Essence of Flames	es21
 Essence	Perfect Essence of Grounding	es24
 Essence	Perfect Essence of Seeking	es43
 Essence	Perfect Essence of Antitoxin	es09
@@ -126,6 +137,7 @@ Essence	Perfect Essence of Sorcery	es46
 Essence	Perfect Essence of Alacrity	es06
 Essence	Perfect Essence of Spite	es49
 Essence	Perfect Essence of Ice	es30
+Essence	Perfect Essence of Venom	es55
 Essence	Essence of Insanity	es31
 Ascendancy	Ascendancy Cairn	ascc
 Ascendancy	Soulstone of Might	assc

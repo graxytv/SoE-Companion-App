@@ -352,15 +352,6 @@
             </div>
           </div>
 
-          <div class="overlay-settings-panel">
-            <div class="overlay-settings-heading">
-              <div>
-                <h3>Total Monster Kills Overlay</h3>
-                <p>Shows synced/live account-wide monster kills.</p>
-              </div>
-              <Toggle checked={monsterKillsOverlayEnabled} onchange={(enabled) => settingsStore.setMonsterKillsOverlayEnabled(enabled)} />
-            </div>
-          </div>
         </div>
       {:else if selectedView === 'Manual Editing'}
         <div class="settings-section achievement-controls">
@@ -369,6 +360,7 @@
           <div class="manual-grid">
             <label>Total Kills <input type="number" min="0" value={stats.totalKills} oninput={(e) => setStat('totalKills', numericInput((e.currentTarget as HTMLInputElement).value))} /></label>
             <label>Unique Items Found <input type="number" min="0" value={stats.uniqueItemsFound} oninput={(e) => setStat('uniqueItemsFound', numericInput((e.currentTarget as HTMLInputElement).value))} /></label>
+            <label>Elite Unique Items Found <input type="number" min="0" value={stats.eliteUniqueItemsFound} oninput={(e) => setStat('eliteUniqueItemsFound', numericInput((e.currentTarget as HTMLInputElement).value))} /></label>
             <label>Fate Cards Found <input type="number" min="0" value={stats.fateCardsFound} oninput={(e) => setStat('fateCardsFound', numericInput((e.currentTarget as HTMLInputElement).value))} /></label>
             <label>Tier 0 Fate Cards Found <input type="number" min="0" value={stats.tier0FateCardsFound} oninput={(e) => setStat('tier0FateCardsFound', numericInput((e.currentTarget as HTMLInputElement).value))} /></label>
             <label>First Elite Unique <input type="text" value={stats.firstEliteUniqueName ?? ''} oninput={(e) => setStat('firstEliteUniqueName', (e.currentTarget as HTMLInputElement).value.trim() || null)} /></label>
@@ -431,6 +423,17 @@
             {/each}
           </div>
         {/if}
+      {/if}
+      {#if selectedView === 'Kills'}
+        <div class="overlay-settings-panel">
+          <div class="overlay-settings-heading">
+            <div>
+              <h3>Total Monster Kills Overlay</h3>
+              <p>Shows synced/live account-wide monster kills.</p>
+            </div>
+            <Toggle checked={monsterKillsOverlayEnabled} onchange={(enabled) => settingsStore.setMonsterKillsOverlayEnabled(enabled)} />
+          </div>
+        </div>
       {/if}
       <div class="achievement-list">
         {#each visibleCategoryProgress as achievement (achievement.id)}

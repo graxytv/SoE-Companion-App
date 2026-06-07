@@ -634,18 +634,63 @@ impl DropScanner {
             || Self::is_soe_material_event(event)
     }
 
+    fn is_soe_13_material_code_event(event: &ItemDropEvent) -> bool {
+        let code = event.item_code.trim().to_ascii_lowercase();
+        matches!(
+            code.as_str(),
+            "csor"
+                | "etor"
+                | "ooal"
+                | "oroh"
+                | "hfmx"
+                | "lsvl"
+                | "ascc"
+                | "assc"
+                | "hor1"
+                | "hor2"
+                | "hor3"
+                | "hor4"
+                | "hor5"
+                | "hor6"
+        ) || Self::is_soe_13_essence_code(&code)
+    }
+
+    fn is_soe_13_essence_code(code: &str) -> bool {
+        const ESSENCE_CODES: &[&str] = &[
+            "es01", "es16", "es59", "es25", "es32", "es10", "es13", "es50", "es19",
+            "es22", "es41", "es07", "es38", "es56", "es35", "es44", "es04", "es47",
+            "es28", "es53", "es31", "es02", "es17", "es60", "es26", "es33", "es11",
+            "es14", "es51", "es20", "es23", "es42", "es08", "es39", "es57", "es36",
+            "es45", "es05", "es48", "es29", "es54", "es03", "es18", "es61", "es27",
+            "es34", "es12", "es15", "es52", "es21", "es24", "es43", "es09", "es40",
+            "es58", "es37", "es46", "es06", "es49", "es30", "es55",
+        ];
+        ESSENCE_CODES.contains(&code)
+    }
+
     fn is_soe_material_event(event: &ItemDropEvent) -> bool {
+        if Self::is_soe_13_material_code_event(event) {
+            return true;
+        }
+
         const MATERIAL_KEYWORDS: &[&str] = &[
             "mythic orb",
             "divine orb",
             "sacred orb",
+            "chaos orb",
             "eternal orb",
             "exalted orb",
+            "orb of alchemy",
+            "orb of horizons",
             "orb of extraction",
             "desecration orb",
             "infused horadrim orb",
             "horadrim scarab",
+            "hatred orb",
             "cindersoul",
+            "vial of lightsong",
+            "ascendancy",
+            "ascendancy cairn",
             "soulstone",
             "demonic essence",
             "prime evil soul",
@@ -673,6 +718,10 @@ impl DropScanner {
             "chisel",
             "glyph",
             "terror of",
+            "essence of",
+            "greater essence",
+            "perfect essence",
+            "essence of insanity",
             "twisted essence of suffering",
             "charged essence of hatred",
             "burning essence of terror",
