@@ -186,31 +186,3 @@ It refreshes shared-stash data, Fate Card stacks, rune materials for runeword pl
 ## Data And Backups
 
 The app stores progress locally. Holy Grail, Fate Cards, and Achievements include backup and restore tools so progress can be recovered or moved more safely.
-
-## Development
-
-Prerequisites:
-
-- Windows.
-- Node.js with Corepack.
-- Rust and the Windows MSVC toolchain.
-- Tauri dependencies.
-
-Common commands:
-
-```powershell
-corepack pnpm install
-corepack pnpm build
-cargo check --manifest-path src-tauri/Cargo.toml
-corepack pnpm tauri build --target i686-pc-windows-msvc
-```
-
-The release build produces:
-
-```text
-target/i686-pc-windows-msvc/release/soe-companion.exe
-```
-
-## Release Notes
-
-This README reflects SoE Companion v1.1.0, including the SoE 13.0.0 item data update, Fate Cards tab, overlay layout improvements, master sync button, updater, and loot filter editor cleanup.
