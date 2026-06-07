@@ -3,11 +3,12 @@
   import { emit, listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
   import { Button, HotkeyInput, SubTabs, Toggle } from '../components';
-  import { settingsStore, type HotkeyConfig, type OverlayPosition } from '../stores';
+  import { lootHistoryStore, settingsStore, type HotkeyConfig, type OverlayPosition } from '../stores';
   import {
     DROP_TRACKER_CATEGORIES,
     RUNE_NAMES,
     categoryLabel,
+    countTotal,
     type DropTrackerCategoryKey,
     type RuneName,
   } from '../lib/drop-tracker-categories';
@@ -62,6 +63,11 @@
   let fateCardSearch = $state('');
 
   let achievementSettings = $derived(settingsStore.settings.achievementSettings);
+  let dropsTrackerCounts = $derived(settingsStore.settings.dropsTrackerCounts);
+  let totalDropsTrackerCounts = $derived(settingsStore.settings.totalDropsTrackerCounts);
+  let dropsTrackerRunCount = $derived(settingsStore.settings.dropsTrackerRunCount);
+  let dropsTrackerRunElapsedMs = $derived(settingsStore.settings.dropsTrackerRunElapsedMs);
+  let dropsTrackerSessionElapsedMs = $derived(settingsStore.settings.dropsTrackerSessionElapsedMs);
   let dropsTrackerCategories = $derived(settingsStore.settings.dropsTrackerCategories);
   let totalDropsTrackerCategories = $derived(settingsStore.settings.totalDropsTrackerCategories);
   let holyGrailOverlayCategories = $derived(settingsStore.settings.holyGrailOverlayCategories);
@@ -71,7 +77,7 @@
   let runeTrackerCounts = $derived(settingsStore.settings.runeTrackerCounts);
   let fateCardTrackerOverlayCards = $derived(settingsStore.settings.fateCardTrackerOverlayCards);
   let fateCardTrackerOverlayTiers = $derived(settingsStore.settings.fateCardTrackerOverlayTiers);
-  let fateCardDropCounts = $derived(settingsStore.settings.fateCardDropCounts);
+  let fateCardTrackerCounts = $derived(settingsStore.settings.fateCardTrackerCounts);
 
   let visibleMaterials = $derived(
     MATERIAL_TRACKER_NAMES
@@ -210,8 +216,61 @@
     return runeTrackerCounts[rune] ?? 0;
   }
 
-  function fateCardDropCount(name: string): number {
-    return fateCardDropCounts[name] ?? 0;
+  function fateCardSessionCount(name: string): number {
+    return fateCardTrackerCounts[name] ?? 0;
+  }
+
+  function materialTotal(): number {
+    return MATERIAL_TRACKER_NAMES.reduce((sum, material) => sum + materialCount(material), 0);
+  }
+
+  function runeTotal(): number {
+    return RUNE_NAMES.reduce((sum, rune) => sum + runeCount(rune), 0);
+  }
+
+  function fateCardSessionTotal(): number {
+    return Object.values(fateCardTrackerCounts).reduce<number>((sum, count) => sum + Math.max(0, Math.floor(count ?? 0)), 0);
+  }
+
+  function formatRunTime(ms: number): string {
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  function formatSessionTime(ms: number): string {
+    const totalSeconds = Math.floor(ms / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  async function resetDropsTrackerSessionCounts(): Promise<void> {
+    settingsStore.resetDropsTrackerCounts();
+    await lootHistoryStore.clear();
+  }
+
+  function resetDropsTrackerRunsAndTimers(): void {
+    settingsStore.resetDropsTrackerRunCount();
+    settingsStore.resetDropsTrackerTimers();
+  }
+
+  function resetTotalDropsTrackerSessionCounts(): void {
+    settingsStore.resetTotalDropsTrackerCounts();
+  }
+
+  function resetMaterialTrackerSessionCounts(): void {
+    settingsStore.resetMaterialTrackerCounts();
+  }
+
+  function resetRuneTrackerSessionCounts(): void {
+    settingsStore.resetRuneTrackerCounts();
+  }
+
+  function resetFateCardTrackerSessionCounts(): void {
+    settingsStore.resetFateCardTrackerCounts();
   }
 
   function formatPosition(position: OverlayPosition): string {
@@ -380,6 +439,36 @@
           <label><span>Run Timer</span><Toggle checked={settingsStore.settings.dropsTrackerRunTimerEnabled} onchange={(enabled) => settingsStore.setDropsTrackerRunTimerEnabled(enabled)} /></label>
           <label><span>Session Timer</span><Toggle checked={settingsStore.settings.dropsTrackerSessionTimerEnabled} onchange={(enabled) => settingsStore.setDropsTrackerSessionTimerEnabled(enabled)} /></label>
         </div>
+
+        <div class="reset-panel">
+          <div class="reset-panel-heading">
+            <h3>Session Resets</h3>
+            <span>Clear the current Drops Tracker session without changing Total Drops.</span>
+          </div>
+          <div class="metric-actions">
+            <div>
+              <strong>{countTotal(dropsTrackerCounts, dropsTrackerCategories)}</strong>
+              <span>Tracked Drops</span>
+              <Button variant="danger" size="sm" onclick={resetDropsTrackerSessionCounts}>Reset Drops</Button>
+            </div>
+            <div>
+              <strong>{dropsTrackerRunCount}</strong>
+              <span>Runs</span>
+              <Button variant="danger" size="sm" onclick={() => settingsStore.resetDropsTrackerRunCount()}>Reset Runs</Button>
+            </div>
+            <div>
+              <strong>{formatRunTime(dropsTrackerRunElapsedMs)}</strong>
+              <span>Run Timer</span>
+              <Button variant="danger" size="sm" onclick={() => settingsStore.resetDropsTrackerRunTimer()}>Reset Timer</Button>
+            </div>
+            <div>
+              <strong>{formatSessionTime(dropsTrackerSessionElapsedMs)}</strong>
+              <span>Session Timer</span>
+              <Button variant="danger" size="sm" onclick={() => settingsStore.resetDropsTrackerSessionTimer()}>Reset Session</Button>
+            </div>
+          </div>
+          <Button variant="danger" size="sm" onclick={resetDropsTrackerRunsAndTimers}>Reset Runs + Timers</Button>
+        </div>
       </div>
 
       <div class="selector-panel">
@@ -413,6 +502,20 @@
           <span class="setting-hint">Lifetime drop counts. Tracking continues while hidden.</span>
         </div>
         <Toggle checked={settingsStore.settings.totalDropsTrackerEnabled} onchange={(enabled) => settingsStore.setTotalDropsTrackerEnabled(enabled)} />
+      </div>
+
+      <div class="reset-panel">
+        <div class="reset-panel-heading">
+          <h3>Total Drops Reset</h3>
+          <span>Clear the persistent Total Drops overlay counters.</span>
+        </div>
+        <div class="metric-actions">
+          <div>
+            <strong>{countTotal(totalDropsTrackerCounts, totalDropsTrackerCategories)}</strong>
+            <span>Total Drops</span>
+            <Button variant="danger" size="sm" onclick={resetTotalDropsTrackerSessionCounts}>Reset Total Drops</Button>
+          </div>
+        </div>
       </div>
 
       <div class="selector-panel">
@@ -487,6 +590,20 @@
         <Toggle checked={settingsStore.settings.fateCardTrackerOverlayEnabled} onchange={(enabled) => settingsStore.setFateCardTrackerOverlayEnabled(enabled)} />
       </div>
 
+      <div class="reset-panel">
+        <div class="reset-panel-heading">
+          <h3>Fate Card Session Reset</h3>
+          <span>Clears only the overlay session counts. Fate Card Grail stack progress is preserved.</span>
+        </div>
+        <div class="metric-actions">
+          <div>
+            <strong>{fateCardSessionTotal()}</strong>
+            <span>Session Cards</span>
+            <Button variant="danger" size="sm" onclick={resetFateCardTrackerSessionCounts}>Reset Fate Cards</Button>
+          </div>
+        </div>
+      </div>
+
       <div class="selector-panel">
         <div class="selector-heading">
           <h3>Track Card Tiers</h3>
@@ -500,7 +617,7 @@
             {@const tierKey = fateCardTierKey(tier)}
             <label class="toggle-row tier-toggle-row">
               <span>{fateCardTierLabel(tier)}</span>
-              <strong>{SOE_13_FATE_CARD_INFO.filter((card) => card.tier === tier).reduce((sum, card) => sum + fateCardDropCount(card.name), 0)}</strong>
+              <strong>{SOE_13_FATE_CARD_INFO.filter((card) => card.tier === tier).reduce((sum, card) => sum + fateCardSessionCount(card.name), 0)}</strong>
               <Toggle checked={fateCardTrackerOverlayTiers[tierKey] ?? true} onchange={(enabled) => settingsStore.setFateCardTrackerOverlayTier(tier, enabled)} />
             </label>
           {/each}
@@ -523,7 +640,7 @@
                 <strong>{card.name}</strong>
                 <small>{fateCardTierLabel(card.tier)} | {card.reward}</small>
               </span>
-              <em>{fateCardDropCount(card.name)}</em>
+              <em>{fateCardSessionCount(card.name)}</em>
               <Toggle checked={fateCardTrackerOverlayCards[card.name] ?? false} onchange={(enabled) => settingsStore.setFateCardTrackerOverlayCard(card.name, enabled)} />
             </label>
           {/each}
@@ -543,6 +660,20 @@
           <span class="setting-hint">Live material drop counters for selected materials.</span>
         </div>
         <Toggle checked={settingsStore.settings.materialTrackerOverlayEnabled} onchange={(enabled) => settingsStore.setMaterialTrackerOverlayEnabled(enabled)} />
+      </div>
+
+      <div class="reset-panel">
+        <div class="reset-panel-heading">
+          <h3>Mats Session Reset</h3>
+          <span>Clear the current Mats Tracker overlay counters.</span>
+        </div>
+        <div class="metric-actions">
+          <div>
+            <strong>{materialTotal()}</strong>
+            <span>Materials</span>
+            <Button variant="danger" size="sm" onclick={resetMaterialTrackerSessionCounts}>Reset Mats</Button>
+          </div>
+        </div>
       </div>
 
       <div class="selector-panel">
@@ -578,6 +709,20 @@
           <span class="setting-hint">Live rune drop counters for selected runes.</span>
         </div>
         <Toggle checked={settingsStore.settings.runeTrackerOverlayEnabled} onchange={(enabled) => settingsStore.setRuneTrackerOverlayEnabled(enabled)} />
+      </div>
+
+      <div class="reset-panel">
+        <div class="reset-panel-heading">
+          <h3>Rune Session Reset</h3>
+          <span>Clear the current Rune Tracker overlay counters.</span>
+        </div>
+        <div class="metric-actions">
+          <div>
+            <strong>{runeTotal()}</strong>
+            <span>Runes</span>
+            <Button variant="danger" size="sm" onclick={resetRuneTrackerSessionCounts}>Reset Runes</Button>
+          </div>
+        </div>
       </div>
 
       <div class="selector-panel">
@@ -798,6 +943,61 @@
     font-family: var(--font-mono);
     font-style: normal;
     text-align: right;
+  }
+
+  .reset-panel {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--border-primary);
+    background: color-mix(in srgb, var(--bg-secondary) 82%, #000 18%);
+  }
+
+  .reset-panel-heading {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .reset-panel-heading h3 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--text-base);
+  }
+
+  .reset-panel-heading span {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    text-align: right;
+  }
+
+  .metric-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: var(--space-2);
+  }
+
+  .metric-actions > div {
+    display: grid;
+    gap: 6px;
+    align-content: start;
+    padding: var(--space-3);
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-primary);
+  }
+
+  .metric-actions strong {
+    color: var(--accent-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-xl);
+  }
+
+  .metric-actions span {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0;
   }
 
   .switch-grid,

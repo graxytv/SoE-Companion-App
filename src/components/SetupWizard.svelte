@@ -15,6 +15,8 @@
 
   interface DropHookStatus {
     installed: boolean;
+    grailInstalled: boolean;
+    identifiedInstalled: boolean;
     projectD2Dir: string;
     projectD2DirExists: boolean;
     originalDllExists: boolean;
@@ -81,7 +83,7 @@
   function statusFor(step: StepId): StepStatus {
     if (step === 'welcome' || step === 'finish') return 'optional';
     if (step === 'launcher') return settingsStore.settings.soeLauncherPath || launcherDetectedPath ? 'done' : 'needs';
-    if (step === 'grail') return hookStatus?.installed ? 'done' : 'needs';
+    if (step === 'grail') return hookStatus?.grailInstalled ? 'done' : 'needs';
     if (step === 'filter') return 'optional';
     if (step === 'stash') return settingsStore.settings.runewordPlannerStashPath || stashPaths.length > 0 ? 'done' : 'needs';
     if (step === 'notifications') return settingsStore.settings.notificationOverlayEnabled ? 'done' : 'optional';
@@ -230,7 +232,7 @@
     busy = 'grail-install';
     message = 'Installing Auto Grail Tracker...';
     try {
-      hookStatus = await invoke<DropHookStatus>('install_drop_hook_for_path', { projectD2Dir: settingsStore.settings.projectD2Path });
+      hookStatus = await invoke<DropHookStatus>('install_auto_grail_hook_for_path', { projectD2Dir: settingsStore.settings.projectD2Path });
       if (!settingsStore.settings.projectD2Path && hookStatus.projectD2DirExists) {
         settingsStore.setProjectD2Path(hookStatus.projectD2Dir);
         projectD2PathDraft = hookStatus.projectD2Dir;
@@ -435,8 +437,8 @@
             <div class="step-card">
               <h3>Auto Grail Tracker</h3>
               <p>Installs the SoE `ijl11.dll` drop hook so unique, set, hellforged, and identified inventory discoveries can feed the grail tracker.</p>
-              <div class="status-card" class:good={hookStatus?.installed}>
-                <strong>{hookStatus?.installed ? 'Installed' : 'Not Installed'}</strong>
+              <div class="status-card" class:good={hookStatus?.grailInstalled}>
+                <strong>{hookStatus?.grailInstalled ? 'Installed' : 'Not Installed'}</strong>
                 <span>{hookStatus?.message ?? 'Checking status...'}</span>
               </div>
               <div class="hook-details">
@@ -462,7 +464,7 @@
               <p class="warning">Close Diablo II before installing. If Windows blocks Program Files writes, run SoE Companion as administrator.</p>
               <div class="action-row">
                 <Button variant="secondary" size="sm" disabled={busy !== ''} onclick={refreshHookStatus}>Refresh</Button>
-                <Button variant="primary" size="sm" disabled={busy !== '' || hookStatus?.installed} onclick={installHook}>Install Auto Grail Tracker</Button>
+                <Button variant="primary" size="sm" disabled={busy !== '' || hookStatus?.grailInstalled} onclick={installHook}>Install Auto Grail Tracker</Button>
               </div>
             </div>
           </div>

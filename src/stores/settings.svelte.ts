@@ -122,6 +122,7 @@ export interface DropTrackerStateSnapshot {
   materialTrackerCounts?: MaterialTrackerCounts;
   fateCardCounts?: FateCardCounts;
   fateCardDropCounts?: FateCardCounts;
+  fateCardTrackerCounts?: FateCardCounts;
   holyGrailFound?: HolyGrailFoundMap;
   achievementStats?: AchievementStats;
 }
@@ -312,6 +313,8 @@ export interface AppSettings {
   fateCardCounts: FateCardCounts;
   /** Live Fate Card drop counts keyed by canonical card name. */
   fateCardDropCounts: FateCardCounts;
+  /** Resettable Fate Card overlay session counts keyed by canonical card name. */
+  fateCardTrackerCounts: FateCardCounts;
   /** When true, show the Fate Cards tracker overlay. */
   fateCardTrackerOverlayEnabled: boolean;
   /** Per-card visibility for the Fate Cards tracker overlay. */
@@ -600,6 +603,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   holyGrailFound: {},
   fateCardCounts: {},
   fateCardDropCounts: {},
+  fateCardTrackerCounts: {},
   fateCardTrackerOverlayEnabled: false,
   fateCardTrackerOverlayCards: defaultFateCardTrackerCardVisibility(false),
   fateCardTrackerOverlayTiers: defaultFateCardTrackerTierVisibility(true),
@@ -1036,6 +1040,9 @@ class SettingsStore {
     const fateCardDropCounts = this.normalizeFateCardCounts(
       (settings as Partial<AppSettings>).fateCardDropCounts,
     );
+    const fateCardTrackerCounts = this.normalizeFateCardCounts(
+      (settings as Partial<AppSettings>).fateCardTrackerCounts,
+    );
     const holyGrailFound = this.withCompletedFateCardStacks(
       this.pruneIncompleteFateCardStacks(
         this.normalizeHolyGrailFound(settings.holyGrailFound),
@@ -1222,6 +1229,7 @@ class SettingsStore {
       holyGrailFound,
       fateCardCounts,
       fateCardDropCounts,
+      fateCardTrackerCounts,
       fateCardTrackerOverlayEnabled:
         settings.fateCardTrackerOverlayEnabled ??
         DEFAULT_SETTINGS.fateCardTrackerOverlayEnabled,
@@ -2537,12 +2545,17 @@ class SettingsStore {
       ...this._settings.fateCardDropCounts,
       [card.name]: (this._settings.fateCardDropCounts[card.name] ?? 0) + 1,
     });
+    const nextTrackerCounts = this.normalizeFateCardCounts({
+      ...this._settings.fateCardTrackerCounts,
+      [card.name]: (this._settings.fateCardTrackerCounts[card.name] ?? 0) + 1,
+    });
     const nextFound = this.withCompletedFateCardStacks(previousFound, nextDropCounts);
     const newlyCompletedEntries = this.newlyCompletedFateCardEntries(previousFound, nextFound);
     const foundChanged = nextFound !== previousFound;
     this.update({
       achievementStats: nextAchievementStats,
       fateCardDropCounts: nextDropCounts,
+      fateCardTrackerCounts: nextTrackerCounts,
       holyGrailFound: nextFound,
     });
     if (foundChanged) {
@@ -2891,6 +2904,9 @@ class SettingsStore {
     const snapshotFateCardDropCounts = snapshot.fateCardDropCounts
       ? this.normalizeFateCardCounts(snapshot.fateCardDropCounts)
       : null;
+    const snapshotFateCardTrackerCounts = snapshot.fateCardTrackerCounts
+      ? this.normalizeFateCardCounts(snapshot.fateCardTrackerCounts)
+      : null;
     const snapshotHolyGrailFound = snapshot.holyGrailFound
       ? this.normalizeHolyGrailFound(snapshot.holyGrailFound)
       : null;
@@ -2924,6 +2940,7 @@ class SettingsStore {
         ? { fateCardCounts: this.normalizeFateCardCounts(snapshot.fateCardCounts) }
         : {}),
       ...(snapshotFateCardDropCounts ? { fateCardDropCounts: snapshotFateCardDropCounts } : {}),
+      ...(snapshotFateCardTrackerCounts ? { fateCardTrackerCounts: snapshotFateCardTrackerCounts } : {}),
       ...(mergedHolyGrailFound ? { holyGrailFound: mergedHolyGrailFound } : {}),
       ...(snapshot.achievementStats
         ? { achievementStats: normalizeAchievementStats(snapshot.achievementStats) }
@@ -2986,6 +3003,14 @@ class SettingsStore {
 
   resetMaterialTrackerCounts(): void {
     this.setMaterialTrackerCounts(defaultMaterialTrackerCounts());
+  }
+
+  setFateCardTrackerCounts(counts: FateCardCounts): void {
+    this.set("fateCardTrackerCounts", this.normalizeFateCardCounts(counts));
+  }
+
+  resetFateCardTrackerCounts(): void {
+    this.setFateCardTrackerCounts({});
   }
 
   recordMaterialTrackerDrop(material: MaterialTrackerName): void {

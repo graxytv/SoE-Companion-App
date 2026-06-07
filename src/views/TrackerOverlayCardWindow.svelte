@@ -88,12 +88,12 @@
       .map((rune) => ({ key: rune, label: rune, tier: runeCategory(rune), count: runeTrackerCounts[rune] ?? 0 })),
   );
   let runeTrackerOverlayEnabled = $derived(settingsStore.settings.runeTrackerOverlayEnabled);
-  let fateCardDropCounts = $derived(settingsStore.settings.fateCardDropCounts);
+  let fateCardTrackerCounts = $derived(settingsStore.settings.fateCardTrackerCounts);
   let fateCardTrackerOverlayEnabled = $derived(settingsStore.settings.fateCardTrackerOverlayEnabled);
   let fateCardTrackerOverlayCards = $derived(settingsStore.settings.fateCardTrackerOverlayCards);
   let fateCardTrackerOverlayTiers = $derived(settingsStore.settings.fateCardTrackerOverlayTiers);
   let fateCardRows = $derived(
-    fateCardTrackerRows(fateCardDropCounts, fateCardTrackerOverlayTiers, fateCardTrackerOverlayCards),
+    fateCardTrackerRows(fateCardTrackerCounts, fateCardTrackerOverlayTiers, fateCardTrackerOverlayCards),
   );
   let holyGrailItems = $derived(buildHolyGrailItems(itemsDictionaryStore.dict));
   let holyGrailOverlayEnabled = $derived(settingsStore.settings.holyGrailOverlayEnabled);
@@ -510,7 +510,7 @@
     materialTrackerOverlayMaterials;
     runeTrackerCounts;
     runeTrackerOverlayRunes;
-    fateCardDropCounts;
+    fateCardTrackerCounts;
     fateCardTrackerOverlayCards;
     fateCardTrackerOverlayTiers;
     achievementStats;

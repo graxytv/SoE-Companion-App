@@ -14,6 +14,8 @@
     originalDllExists: boolean;
     iniExists: boolean;
     installed: boolean;
+    grailInstalled: boolean;
+    identifiedInstalled: boolean;
     message: string;
   }
 
@@ -60,7 +62,7 @@
         settingsStore.setProjectD2Path(status.projectD2Dir);
         projectD2PathDraft = status.projectD2Dir;
       }
-      identifiedDropsMessage = status.message;
+      identifiedDropsMessage = '';
     } catch (err) {
       identifiedDropsMessage = `Could not check identified drops: ${err}`;
     } finally {
@@ -72,11 +74,25 @@
     identifiedDropsBusy = true;
     identifiedDropsMessage = 'Installing drop hook...';
     try {
-      dropHookStatus = await invoke<DropHookStatus>('install_drop_hook_for_path', { projectD2Dir: settingsStore.settings.projectD2Path });
+      dropHookStatus = await invoke<DropHookStatus>('install_identified_drops_hook_for_path', { projectD2Dir: settingsStore.settings.projectD2Path });
       dropIdentifiedConfig = await invoke<DropIdentifiedConfig>('get_drop_identified_config_for_path', { projectD2Dir: settingsStore.settings.projectD2Path });
-      identifiedDropsMessage = 'Drop hook installed. Changes take effect the next time Diablo II starts.';
+      identifiedDropsMessage = 'Identified Drops installed. Changes take effect the next time Diablo II starts.';
     } catch (err) {
       identifiedDropsMessage = `Install failed: ${err}`;
+    } finally {
+      identifiedDropsBusy = false;
+    }
+  }
+
+  async function uninstallIdentifiedDropsHook(): Promise<void> {
+    identifiedDropsBusy = true;
+    identifiedDropsMessage = 'Removing Identified Drops...';
+    try {
+      dropHookStatus = await invoke<DropHookStatus>('uninstall_identified_drops_hook_for_path', { projectD2Dir: settingsStore.settings.projectD2Path });
+      dropIdentifiedConfig = await invoke<DropIdentifiedConfig>('get_drop_identified_config_for_path', { projectD2Dir: settingsStore.settings.projectD2Path });
+      identifiedDropsMessage = dropHookStatus.message;
+    } catch (err) {
+      identifiedDropsMessage = `Remove failed: ${err}`;
     } finally {
       identifiedDropsBusy = false;
     }
@@ -156,27 +172,52 @@
     settingsStore.setProjectD2Path(projectD2PathDraft);
     await refreshIdentifiedDrops();
   }
+
+  function identifiedStatusLabel(): string {
+    return dropHookStatus?.identifiedInstalled ? 'Installed' : 'Not Installed';
+  }
+
+  function identifiedStatusMessage(): string {
+    if (identifiedDropsMessage) return identifiedDropsMessage;
+    if (!dropHookStatus) return 'Checking Identified Drops status...';
+    if (!dropHookStatus.projectD2DirExists) return 'ProjectD2 folder was not found.';
+    if (dropHookStatus.identifiedInstalled && dropHookStatus.grailInstalled) {
+      return 'Identified Drops are installed. Auto Grail Tracker is also enabled.';
+    }
+    if (dropHookStatus.identifiedInstalled) {
+      return 'Identified Drops are installed. Auto Grail Tracker is off.';
+    }
+    if (dropHookStatus.grailInstalled) {
+      return 'Auto Grail Tracker is installed. Identified Drops are off.';
+    }
+    if (dropHookStatus.installed) {
+      return 'Shared SoE hook is installed. Identified Drops are off.';
+    }
+    return 'Identified Drops are not installed.';
+  }
 </script>
 
 <div class="settings-section identified-drops-panel">
-  <div class="identified-header">
-    <div>
-      <h2 class="section-title">Identified Drops</h2>
-      <p class="section-description">Use the SoE drop hook to make selected item qualities drop pre-identified.</p>
+  <div class="hook-card">
+    <div class="hook-status">
+      <span class="status-dot" class:active={dropHookStatus?.identifiedInstalled}></span>
+      <div>
+        <strong>{identifiedStatusLabel()}</strong>
+        <span>{identifiedStatusMessage()}</span>
+      </div>
     </div>
-    <div class="identified-actions">
-      <Button variant="secondary" size="sm" disabled={identifiedDropsBusy} onclick={refreshIdentifiedDrops}>Refresh</Button>
-      <Button variant="primary" size="sm" disabled={identifiedDropsBusy || dropHookStatus?.installed} onclick={installIdentifiedDropsHook}>
-        {dropHookStatus?.installed ? 'Installed' : 'Install Hook'}
+    <div class="hook-actions">
+      <Button variant="primary" size="sm" disabled={identifiedDropsBusy || dropHookStatus?.identifiedInstalled} onclick={installIdentifiedDropsHook}>
+        {dropHookStatus?.identifiedInstalled ? 'Installed' : 'Install Identified Drops'}
       </Button>
+      {#if dropHookStatus?.identifiedInstalled}
+        <Button variant="danger" size="sm" disabled={identifiedDropsBusy} onclick={uninstallIdentifiedDropsHook}>Remove</Button>
+      {/if}
+      <Button variant="secondary" size="sm" disabled={identifiedDropsBusy} onclick={refreshIdentifiedDrops}>Refresh Status</Button>
     </div>
   </div>
 
-  <p class="identified-warning">
-    <strong>Close Diablo II first.</strong>
-    The game must be closed before installing the hook or changing any Identified Drops settings. Changes take effect the next time Diablo II starts.
-  </p>
-
+  {#if dropHookStatus && !dropHookStatus.projectD2DirExists}
   <div class="project-d2-picker">
     <label class="project-d2-field">
       <span>ProjectD2 Folder</span>
@@ -192,11 +233,13 @@
       <Button variant="primary" size="sm" disabled={identifiedDropsBusy} onclick={saveProjectD2Folder}>Use Folder</Button>
     </div>
   </div>
+  {/if}
 
+  {#if dropHookStatus?.identifiedInstalled || dropIdentifiedConfig.enabled}
+  <div class="identified-options">
   <div class="setting-row">
     <div class="setting-info">
       <span class="setting-label">Enable Identified Drops</span>
-      <span class="setting-hint">Installs/checks <code>ijl11.dll</code>, <code>ijl11_orig.dll</code>, and <code>DropIdentified.ini</code> in the ProjectD2 folder.</span>
     </div>
     <Toggle checked={dropIdentifiedConfig.enabled} onchange={setIdentifiedDropsEnabled} />
   </div>
@@ -231,58 +274,72 @@
       <Toggle checked={dropIdentifiedConfig.grandCharm} onchange={(enabled) => setIdentifiedCharm('grandCharm', enabled)} />
     </label>
   </div>
-
-  <div class="identified-status-grid">
-    <div><span>ProjectD2 Folder</span><strong>{dropHookStatus?.projectD2DirExists ? 'Found' : 'Missing'}</strong></div>
-    <div><span>SoE ijl11.dll</span><strong>{dropHookStatus?.installed ? 'Installed' : 'Needs Install'}</strong></div>
-    <div><span>Original DLL</span><strong>{dropHookStatus?.originalDllExists ? 'Found' : 'Missing'}</strong></div>
-    <div><span>INI</span><strong>{dropHookStatus?.iniExists ? 'Found' : 'Missing'}</strong></div>
   </div>
-
-  {#if identifiedDropsMessage}
-    <p class="identified-message">{identifiedDropsMessage}</p>
   {/if}
-
-  <p class="identified-path">INI: {dropHookStatus?.iniPath ?? 'C:\\Program Files (x86)\\Diablo II\\ProjectD2\\DropIdentified.ini'}</p>
 </div>
 
 <style>
   .identified-drops-panel {
     display: grid;
-    gap: var(--space-3);
+    gap: 12px;
   }
 
-  .identified-header {
+  .hook-card {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
-    gap: var(--space-3);
-  }
-
-  .identified-header .section-description {
-    margin: 6px 0 0;
-  }
-
-  .identified-actions {
-    display: flex;
-    gap: var(--space-2);
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-
-  .identified-warning {
-    margin: 0;
-    padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 55%, var(--border-primary));
+    gap: 16px;
+    padding: 14px;
+    border: 1px solid var(--border-primary);
     border-radius: 8px;
-    background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-secondary));
+    background: var(--bg-secondary);
+  }
+
+  .hook-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
     color: var(--text-secondary);
     font-size: 13px;
-    line-height: 1.35;
   }
 
-  .identified-warning strong {
-    color: var(--accent-primary);
+  .hook-status div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .hook-status strong {
+    color: var(--text-primary);
+  }
+
+  .hook-status span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .status-dot.active {
+    background: #4aaa3e;
+    box-shadow: 0 0 6px #4aaa3e;
+  }
+
+  .hook-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-shrink: 0;
   }
 
   .project-d2-picker {
@@ -320,15 +377,39 @@
     justify-content: flex-end;
   }
 
-  .identified-quality-grid,
-  .identified-status-grid {
+  .identified-options {
+    display: grid;
+    gap: 10px;
+  }
+
+  .identified-options .setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: 10px;
+    border: 1px solid var(--border-primary);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+  }
+
+  .identified-options .setting-info {
+    display: grid;
+    gap: 2px;
+  }
+
+  .identified-options .setting-label {
+    color: var(--text-primary);
+    font-weight: 700;
+  }
+
+  .identified-quality-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 8px;
   }
 
-  .identified-quality,
-  .identified-status-grid > div {
+  .identified-quality {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -342,47 +423,20 @@
     font-weight: 600;
   }
 
-  .identified-status-grid > div {
-    align-items: flex-start;
-    flex-direction: column;
-    justify-content: center;
-    font-size: 12px;
-  }
-
-  .identified-status-grid span,
-  .identified-message,
-  .identified-path {
-    color: var(--text-secondary);
-  }
-
-  .identified-status-grid strong {
-    color: var(--accent-primary);
-  }
-
-  .identified-message,
-  .identified-path {
-    margin: 0;
-    font-size: 12px;
-  }
-
-  .identified-path {
-    font-family: var(--font-mono);
-    overflow-wrap: anywhere;
-  }
-
   @media (max-width: 760px) {
-    .identified-header,
+    .hook-card,
     .project-d2-picker {
+      display: grid;
       grid-template-columns: 1fr;
     }
 
-    .identified-header {
-      display: grid;
-    }
-
-    .identified-actions,
+    .hook-actions,
     .project-d2-actions {
       justify-content: flex-start;
+    }
+
+    .hook-status span:last-child {
+      white-space: normal;
     }
   }
 </style>

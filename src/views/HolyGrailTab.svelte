@@ -53,6 +53,8 @@
     logExists: boolean;
     logSize: number;
     installed: boolean;
+    grailInstalled: boolean;
+    identifiedInstalled: boolean;
     currentDllHash: string | null;
     bundledDllHash: string;
     message: string;
@@ -393,7 +395,7 @@
     hookBusy = true;
     importMessage = '';
     try {
-      hookStatus = await invoke<DropHookStatus>('install_drop_hook_for_path', { projectD2Dir: settingsStore.settings.projectD2Path });
+      hookStatus = await invoke<DropHookStatus>('install_auto_grail_hook_for_path', { projectD2Dir: settingsStore.settings.projectD2Path });
       if (!settingsStore.settings.projectD2Path && hookStatus.projectD2DirExists) {
         settingsStore.setProjectD2Path(hookStatus.projectD2Dir);
         projectD2PathDraft = hookStatus.projectD2Dir;
@@ -401,6 +403,20 @@
       importMessage = hookStatus.message;
     } catch (error) {
       importMessage = `Install failed: ${error}`;
+      await refreshHookStatus();
+    } finally {
+      hookBusy = false;
+    }
+  }
+
+  async function uninstallHook(): Promise<void> {
+    hookBusy = true;
+    importMessage = '';
+    try {
+      hookStatus = await invoke<DropHookStatus>('uninstall_auto_grail_hook_for_path', { projectD2Dir: settingsStore.settings.projectD2Path });
+      importMessage = hookStatus.message;
+    } catch (error) {
+      importMessage = `Remove failed: ${error}`;
       await refreshHookStatus();
     } finally {
       hookBusy = false;
@@ -619,16 +635,21 @@
 
     <div class="hook-card">
       <div class="hook-status">
-        <span class="import-status-dot" class:active={hookStatus?.installed}></span>
+        <span class="import-status-dot" class:active={hookStatus?.grailInstalled}></span>
         <div>
-          <strong>{hookStatus?.installed ? 'Installed' : 'Not Installed'}</strong>
+          <strong>{hookStatus?.grailInstalled ? 'Installed' : 'Not Installed'}</strong>
           <span>{hookStatus?.message ?? 'Checking Auto Grail Tracker status...'}</span>
         </div>
       </div>
       <div class="hook-actions">
-        <Button variant="primary" size="sm" disabled={hookBusy || hookStatus?.installed} onclick={installHook}>
+        <Button variant="primary" size="sm" disabled={hookBusy || hookStatus?.grailInstalled} onclick={installHook}>
           {hookBusy ? 'Installing...' : 'Install Auto Grail Tracker'}
         </Button>
+        {#if hookStatus?.grailInstalled}
+          <Button variant="danger" size="sm" disabled={hookBusy} onclick={uninstallHook}>
+            Remove
+          </Button>
+        {/if}
         <Button variant="secondary" size="sm" disabled={hookBusy} onclick={refreshHookStatus}>
           Refresh Status
         </Button>

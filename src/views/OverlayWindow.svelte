@@ -231,7 +231,7 @@
       .filter((rune) => runeTrackerOverlayRunes[rune])
       .map((rune) => ({ key: rune, label: rune, tier: runeCategory(rune), count: runeTrackerCounts[rune] ?? 0 })),
   );
-  let fateCardDropCounts = $derived(settingsStore.settings.fateCardDropCounts);
+  let fateCardTrackerCounts = $derived(settingsStore.settings.fateCardTrackerCounts);
   let fateCardTrackerOverlayEnabled = $derived(settingsStore.settings.fateCardTrackerOverlayEnabled);
   let fateCardTrackerOverlayCards = $derived(settingsStore.settings.fateCardTrackerOverlayCards);
   let fateCardTrackerOverlayTiers = $derived(settingsStore.settings.fateCardTrackerOverlayTiers);
@@ -239,7 +239,7 @@
   let fateCardTrackerOverlayWidth = $derived(settingsStore.settings.fateCardTrackerOverlayWidth);
   let fateCardTrackerOverlayHeight = $derived(settingsStore.settings.fateCardTrackerOverlayHeight);
   let fateCardRows = $derived(
-    fateCardTrackerRows(fateCardDropCounts, fateCardTrackerOverlayTiers, fateCardTrackerOverlayCards),
+    fateCardTrackerRows(fateCardTrackerCounts, fateCardTrackerOverlayTiers, fateCardTrackerOverlayCards),
   );
   let holyGrailFound = $derived(settingsStore.settings.holyGrailFound);
   let holyGrailOverlayEnabled = $derived(settingsStore.settings.holyGrailOverlayEnabled);
@@ -314,6 +314,7 @@
       runeTrackerCounts: settingsStore.settings.runeTrackerCounts,
       materialTrackerCounts: settingsStore.settings.materialTrackerCounts,
       fateCardDropCounts: settingsStore.settings.fateCardDropCounts,
+      fateCardTrackerCounts: settingsStore.settings.fateCardTrackerCounts,
       achievementStats: settingsStore.settings.achievementStats,
     };
     // Emit a plain JSON payload rather than Svelte proxy objects. This keeps
@@ -681,7 +682,7 @@
     runeTrackerOverlayRunes;
     runeTrackerOverlayWidth;
     runeTrackerOverlayHeight;
-    fateCardDropCounts;
+    fateCardTrackerCounts;
     fateCardTrackerOverlayCards;
     fateCardTrackerOverlayTiers;
     fateCardTrackerOverlayWidth;
