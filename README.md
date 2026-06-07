@@ -4,7 +4,7 @@ SoE Companion is a Windows companion app for Sanctuary of Exile built around dro
 
 The app is designed for players who want their grail, materials, runes, cards, sounds, and achievement progress in one place while keeping the normal Diablo II gameplay window clean.
 
-[Download the latest release](https://github.com/graxytv/SoE-Companion-v1.0.0/releases/latest)
+[Download the latest release](https://github.com/graxytv/SoE-Companion-App/releases/latest)
 
 ![SoE Companion Home](docs/screenshots/home.png)
 
@@ -40,7 +40,7 @@ The app is designed for players who want their grail, materials, runes, cards, s
 
 ## Installation
 
-1. Open the [latest GitHub Release](https://github.com/graxytv/SoE-Companion-v1.0.0/releases/latest).
+1. Open the [latest GitHub Release](https://github.com/graxytv/SoE-Companion-App/releases/latest).
 2. Download `soe-companion.exe`.
 3. Run the app on Windows.
 4. Use the `SoE Companion Setup Wizard` from the Home tab to configure paths, the loot filter, the drop hook, sounds, overlays, stash sync, and hotkeys.
