@@ -1,8 +1,8 @@
 # SoE Companion
 
-SoE Companion is a Windows companion app for Sanctuary of Exile built around drop tracking, Holy Grail progress, Fate Cards, achievements, loot filter editing, item sounds, and movable in-game overlays.
+SoE Companion is a Windows companion app for Sanctuary of Exile built around drop tracking, Holy Grail progress, Fate Cards tracking, achievements, loot filter editing, item sounds/notifications and movable in-game overlays.
 
-The app is designed for players who want their grail, materials, runes, cards, sounds, and achievement progress in one place while keeping the normal Diablo II gameplay window clean.
+The app is designed for players who want all their progress in one place!
 
 [Download the latest release](https://github.com/graxytv/SoE-Companion-App/releases/latest)
 
@@ -10,15 +10,15 @@ The app is designed for players who want their grail, materials, runes, cards, s
 
 ## Highlights
 
-- Live drop tracking for uniques, hellforged items, sets, runes, runewords, Fate Cards, Hatred Orbs, essences, ascendancy items, charms, jewels, and SoE materials.
-- Holy Grail tracking across classic grail categories and new SoE 13.0.0 categories.
+- Live drop tracking for uniques,sets, runes, runewords, Fate Cards, currency orbs, essences, ascendancy items, all SoE specific items and more!
+- Automatic Holy Grail Tracking
 - Fate Card stash sync with card tiers, full stack sizes, full stack rewards, and full-stack grail completion.
 - Drag-and-resize overlay layout mode for the in-game tracker cards.
 - Customizable notification popups and item-specific sound rules.
-- Built-in loot filter editor with line numbers, install help, and bundled SoE filter rules.
-- Account-wide achievements with bossing sub-tabs, level tracking, popup settings, and backups.
-- Master `Sync All` button for shared stash, Fate Cards, account stats, character levels, and runeword materials.
-- GitHub release updater from the General tab.
+- Built-in loot filter editor
+- Account-wide and automatic achievement tracking including bossing, level tracking, grail progress, item drops, monster kills and much more.
+- Master `Sync All` button for all trackers.
+- GitHub release updater from the General tab so you can always stay up-to-date without losing any data!
 
 ## Screenshots
 
@@ -54,10 +54,9 @@ Some actions touch Diablo II files. Close Diablo II before installing the Auto G
 The Home tab is the launchpad for the app.
 
 - Shows game status and current app version.
-- Provides the `Play` button for starting Diablo II.
+- Provides the `Play` button for starting SoE Launcher.
 - Opens the setup wizard.
 - Summarizes total kills, achievement unlocks, and Holy Grail progress.
-- Keeps the master `Sync All` button visible in the header.
 
 ### General
 
@@ -68,8 +67,8 @@ General contains app-wide settings and maintenance tools.
 - `Always Show Overlays` for keeping overlays visible outside game focus.
 - `Edit Overlay Layout` for moving and resizing overlay windows.
 - Hotkeys for toggling the main app window and overlay layout editor.
-- New Game Automation configuration.
-- Reset Account Stats, including local stash data and account-setting reset behavior.
+- New Game Automation/Macro for quickly making new games when farming.
+- Reset All Account Stats, including local stash data and account-settings.
 
 ### Drops Tracker
 
@@ -84,18 +83,15 @@ The Drops Tracker tab controls live drop counting and the tracker overlays.
 - `Rune Tracker` lets you choose which runes show in the rune overlay.
 - `Muling Mode` pauses drop, grail, recent item, run-count, and timer tracking while moving items.
 
-Tracked categories include uniques, hellforged items, sets, low/mid/high runes, runewords, charms, jewels, Fate Cards, Hatred Orbs, essences, ascendancy items, and SoE materials.
-
 ### Loot Filter
 
 The Loot Filter tab is a built-in editor for the bundled SoE filter.
 
 - Line numbers beside the editor for easier support and debugging.
-- Install instructions for putting the filter into Diablo II.
+- Install instructions for setting up your filter.
 - Copy, rename, delete, and save controls.
-- Bundled `Hiim_SOE` filter support.
-- SoE 13.0.0 item rules for Fate Cards, essences, Hatred Orbs, ascendancy items, and currency/material additions.
-- Syntax reference panel for filter editing.
+- Bundled `Hiim_SOE` filter with Season 13 support.
+- SoE Season 13 item rules for Fate Cards, essences, Hatred Orbs, ascendancy items, and currency/material additions.
 
 ### Notifications
 
