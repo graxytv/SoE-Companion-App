@@ -22,11 +22,6 @@
   const subTabs = [
     { id: 'overview', label: 'Overview' },
     { id: 'identified-drops', label: 'Identified Drops' },
-    { id: 'tracker-settings', label: 'Tracker Settings' },
-    { id: 'drops-overlay', label: 'Drops Tracker Overlay Settings' },
-    { id: 'total-overlay', label: 'Total Drops Overlay Settings' },
-    { id: 'mats-tracker', label: 'Mats Tracker' },
-    { id: 'rune-tracker', label: 'Rune Tracker' },
     { id: 'muling-mode', label: 'Muling Mode' },
   ];
 
@@ -520,23 +515,6 @@
         <HotkeyInput value={settingsStore.settings.mulingModeHotkey} onchange={setMulingHotkey} />
       </div>
 
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">Show Muling Indicator</span>
-          <span class="setting-hint">Shows the compact hotkey/M indicator while Muling Mode is active.</span>
-        </div>
-        <Toggle checked={mulingIndicatorOverlayEnabled} onchange={setMulingIndicatorOverlayEnabled} />
-      </div>
-    </div>
-
-    <div class="settings-cluster">
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">Reset position and size</span>
-          <span class="setting-hint">Restore the indicator to the default overlay placement.</span>
-        </div>
-        <Button variant="secondary" size="sm" onclick={resetMulingIndicatorPosition}>Reset to default</Button>
-      </div>
     </div>
   </div>
   {:else if activeSubTab === 'identified-drops'}

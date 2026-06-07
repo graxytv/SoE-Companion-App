@@ -8,7 +8,7 @@
     import { windowState, itemsDictionaryStore, settingsStore, type DropTrackerStateSnapshot, type WindowState } from "../stores";
     import { categorizeDrop } from "../lib/drop-tracker-categories";
     import { buildHolyGrailItems, findHolyGrailItem } from "../lib/holy-grail";
-    import { AchievementsTab, FateCardsTab, GeneralTab, HomeTab, LootFilterTab, NotificationsTab, SoundsTab, DropsTrackerTab, HolyGrailTab, SoeWikiTab } from "./index";
+    import { AchievementsTab, FateCardsTab, GeneralTab, HomeTab, LootFilterTab, OverlaysTab, SoundsTab, DropsTrackerTab, HolyGrailTab, SoeWikiTab } from "./index";
 
     let scannerStatus = $state<
         "stopped" | "starting" | "running" | "stopping" | "error"
@@ -50,9 +50,9 @@
     const tabs = [
         { id: "home", label: "Home" },
         { id: "general", label: "General" },
+        { id: "overlays", label: "Overlays" },
         { id: "drops-tracker", label: "Drops Tracker" },
         { id: "lootfilter", label: "Loot Filter" },
-        { id: "notifications", label: "Notifications" },
         { id: "sounds", label: "Sounds" },
         { id: "achievements", label: "Achievements" },
         { id: "holy-grail", label: "Holy Grail" },
@@ -424,10 +424,10 @@
                     <HomeTab {gameStatus} {scannerStatus} onNavigate={(tabId) => { activeTab = tabId; }} />
                 {:else if tab === "general"}
                     <GeneralTab {gameStatus} />
+                {:else if tab === "overlays"}
+                    <OverlaysTab />
                 {:else if tab === "lootfilter"}
                     <LootFilterTab />
-                {:else if tab === "notifications"}
-                    <NotificationsTab />
                 {:else if tab === "sounds"}
                     <SoundsTab />
                 {:else if tab === "achievements"}

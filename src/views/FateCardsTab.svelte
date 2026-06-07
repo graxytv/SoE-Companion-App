@@ -22,7 +22,6 @@
 
   const subTabs = [
     { id: 'card-list', label: 'Card List' },
-    { id: 'overlay', label: 'Overlay Settings' },
     { id: 'backup', label: 'Backup' },
   ];
   const FATE_CARD_STASH_SYNC_INTERVAL_MS = 30 * 1000;

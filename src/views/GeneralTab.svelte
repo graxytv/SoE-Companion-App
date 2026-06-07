@@ -1,7 +1,5 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { emit, listen } from '@tauri-apps/api/event';
-  import { onMount } from 'svelte';
   import { Button, HotkeyInput, ThemeToggle, Toggle, UpdateButton } from '../components';
   import { settingsStore, type HotkeyConfig } from '../stores';
 
@@ -23,10 +21,8 @@
   let resettingAccountStats = $state(false);
   let confirmAccountStatsReset = $state(false);
   let accountStatsMessage = $state('');
-  let overlayLayoutEditing = $state(false);
-  let overlayLayoutMessage = $state('');
 
-  type HotkeyId = 'toggleWindow' | 'editOverlay';
+  type HotkeyId = 'toggleWindow';
   interface HotkeyRow {
     id: HotkeyId;
     label: string;
@@ -41,17 +37,10 @@
       hint: 'Show/hide main window over game',
       setter: (h) => settingsStore.setToggleWindowHotkey(h),
     },
-    {
-      id: 'editOverlay',
-      label: 'Edit overlay layout',
-      hint: 'Shows draggable native layout windows over Diablo II.',
-      setter: (h) => settingsStore.setEditOverlayHotkey(h),
-    },
   ];
 
   const HOTKEY_GETTERS: Record<HotkeyId, () => HotkeyConfig> = {
     toggleWindow: () => settingsStore.settings.toggleWindowHotkey,
-    editOverlay:  () => settingsStore.settings.editOverlayHotkey,
   };
   let hotkeyValues = $derived(
     Object.fromEntries(
@@ -97,17 +86,6 @@
     settingsStore.setGameResetHotkey(hotkey);
   }
 
-  function setAlwaysShowOverlays(enabled: boolean): void {
-    settingsStore.set('alwaysShowOverlays', enabled);
-  }
-
-  async function toggleOverlayLayoutEditor(): Promise<void> {
-    const active = !overlayLayoutEditing;
-    overlayLayoutEditing = active;
-    if (active) overlayLayoutMessage = '';
-    await emit('overlay-edit-mode', { active });
-  }
-
   async function saveResetAutomationConfig(): Promise<void> {
     saveExitAutomationStatus = 'Saving...';
     try {
@@ -145,19 +123,6 @@
     }
   }
 
-  onMount(() => {
-    const unlisteners: Array<() => void> = [];
-    listen<{ active: boolean }>('overlay-edit-mode', (event) => {
-      overlayLayoutEditing = event.payload.active;
-    }).then((u) => unlisteners.push(u));
-    listen<{ message: string }>('overlay-layout-message', (event) => {
-      overlayLayoutMessage = event.payload.message;
-    }).then((u) => unlisteners.push(u));
-
-    return () => {
-      unlisteners.forEach((u) => u());
-    };
-  });
 </script>
 
 <section class="tab-content">
@@ -195,32 +160,6 @@
         <span class="setting-hint">Check GitHub Releases for a newer SoE Companion build.</span>
       </div>
       <UpdateButton />
-    </div>
-  </div>
-
-  <div class="settings-section">
-    <h2 class="section-title">Overlays</h2>
-    <div class="setting-row">
-      <div class="setting-info">
-        <span class="setting-label">Always Show Overlays</span>
-        <span class="setting-hint">Keep notification and tracker overlays visible even when Diablo II is not in focus.</span>
-      </div>
-      <Toggle checked={settingsStore.settings.alwaysShowOverlays} onchange={setAlwaysShowOverlays} />
-    </div>
-
-    <div class="setting-row">
-      <div class="setting-info">
-        <span class="setting-label">Edit Overlay Layout</span>
-        <span class="setting-hint">Drag every movable overlay in native edit windows over the Diablo II window.</span>
-      </div>
-      <div class="overlay-edit-control">
-        <Button variant={overlayLayoutEditing ? 'secondary' : 'primary'} size="sm" onclick={toggleOverlayLayoutEditor}>
-          {overlayLayoutEditing ? 'Done Editing' : 'Edit Layout'}
-        </Button>
-        {#if overlayLayoutMessage}
-          <span class="overlay-edit-status">{overlayLayoutMessage}</span>
-        {/if}
-      </div>
     </div>
   </div>
 
@@ -369,22 +308,6 @@
     margin-top: var(--space-3);
     padding-top: var(--space-3);
     border-top: 1px solid var(--border-primary);
-  }
-
-  .overlay-edit-control {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 6px;
-    min-width: 210px;
-  }
-
-  .overlay-edit-status {
-    max-width: 280px;
-    color: var(--accent-primary);
-    font-size: 12px;
-    line-height: 1.3;
-    text-align: right;
   }
 
   .automation-summary {

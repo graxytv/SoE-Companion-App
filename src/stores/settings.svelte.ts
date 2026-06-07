@@ -459,9 +459,9 @@ const DEFAULT_GAME_RESET_HOTKEY: HotkeyConfig = {
 export const DEFAULT_MAIN_TAB_ORDER = [
   "home",
   "general",
+  "overlays",
   "drops-tracker",
   "lootfilter",
-  "notifications",
   "sounds",
   "achievements",
   "holy-grail",
@@ -471,11 +471,7 @@ export const DEFAULT_MAIN_TAB_ORDER = [
 
 export const DEFAULT_DROPS_TRACKER_SUB_TAB_ORDER = [
   "overview",
-  "tracker-settings",
-  "drops-overlay",
-  "total-overlay",
-  "mats-tracker",
-  "rune-tracker",
+  "identified-drops",
   "muling-mode",
 ];
 
@@ -483,7 +479,6 @@ export const DEFAULT_HOLY_GRAIL_SUB_TAB_ORDER = [
   "overview",
   "runeword-planner",
   "import",
-  "overlay",
   "notifications",
   "backup",
 ];

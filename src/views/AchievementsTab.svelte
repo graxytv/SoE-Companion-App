@@ -15,7 +15,7 @@
   import { buildHolyGrailItems } from '../lib/holy-grail';
   import { playSound } from '../lib/sound-player';
 
-  type AchievementView = AchievementCategory | 'Manual Editing' | 'Achievement Pop-up Settings' | 'Back-up';
+  type AchievementView = AchievementCategory | 'Manual Editing' | 'Achievement Unlock Sound' | 'Back-up';
 
   interface BackupStatus {
     backupExists: boolean;
@@ -46,7 +46,7 @@
   const achievementTabs: Array<{ id: AchievementView; label: string }> = [
     ...ACHIEVEMENT_CATEGORIES.map((category) => ({ id: category, label: category })),
     { id: 'Manual Editing', label: 'Manual Editing' },
-    { id: 'Achievement Pop-up Settings', label: 'Achievement Pop-up Settings' },
+    { id: 'Achievement Unlock Sound', label: 'Achievement Unlock Sound' },
     { id: 'Back-up', label: 'Back-up' },
   ];
 
@@ -87,8 +87,6 @@
 
   let stats = $derived(settingsStore.settings.achievementStats);
   let achievementSettings = $derived(settingsStore.settings.achievementSettings);
-  let achievementProgressOverlayEnabled = $derived(settingsStore.settings.achievementProgressOverlayEnabled);
-  let monsterKillsOverlayEnabled = $derived(settingsStore.settings.monsterKillsOverlayEnabled);
   let holyGrailItems = $derived(buildHolyGrailItems(itemsDictionaryStore.dict));
   let progress = $derived(evaluateAchievements({
     stats,
@@ -99,7 +97,7 @@
   let visibleProgress = $derived(
     selectedView === 'Back-up'
       ? []
-      : selectedView === 'Achievement Pop-up Settings'
+      : selectedView === 'Achievement Unlock Sound'
       ? []
       : selectedView === 'Manual Editing'
       ? []
@@ -300,29 +298,11 @@
             {#if backupMessage} {backupMessage}{/if}
           </p>
         </div>
-      {:else if selectedView === 'Achievement Pop-up Settings'}
+      {:else if selectedView === 'Achievement Unlock Sound'}
         <div class="settings-section achievement-controls">
-          <h2 class="section-title">Achievement Unlock Popups</h2>
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-label">Achievement Unlock Popups</span>
-              <span class="setting-hint">Progress updates silently. Popups only appear when an achievement reaches 100% for the first time.</span>
-            </div>
-            <Toggle checked={achievementSettings.overlayEnabled} onchange={(enabled) => settingsStore.setAchievementSettings({ overlayEnabled: enabled })} />
-          </div>
+          <h2 class="section-title">Achievement Unlock Sound</h2>
+          <p class="section-description">Popup visibility, size, opacity, and layout now live in the Overlays tab.</p>
           <div class="achievement-settings-grid">
-            <label>
-              Duration
-              <input type="number" min="1500" max="20000" step="500" value={achievementSettings.overlayDuration} oninput={(e) => settingsStore.setAchievementSettings({ overlayDuration: numericInput((e.currentTarget as HTMLInputElement).value) })} />
-            </label>
-            <label>
-              Font Size
-              <input type="number" min="11" max="28" value={achievementSettings.overlayFontSize} oninput={(e) => settingsStore.setAchievementSettings({ overlayFontSize: numericInput((e.currentTarget as HTMLInputElement).value) })} />
-            </label>
-            <label>
-              Opacity
-              <input type="range" min="0.25" max="1" step="0.05" value={achievementSettings.overlayOpacity} oninput={(e) => settingsStore.setAchievementSettings({ overlayOpacity: Number((e.currentTarget as HTMLInputElement).value) })} />
-            </label>
             <label class="sound-slot-field">
               Sound Slot
               <div class="sound-slot-row">
@@ -340,16 +320,6 @@
               <input type="range" min="0" max="1" step="0.05" value={achievementSettings.soundVolume} oninput={(e) => settingsStore.setAchievementSettings({ soundVolume: Number((e.currentTarget as HTMLInputElement).value) })} />
             </label>
             <Button variant="secondary" size="sm" onclick={testAchievementPopup}>Test Popup</Button>
-          </div>
-
-          <div class="overlay-settings-panel">
-            <div class="overlay-settings-heading">
-              <div>
-                <h3>Achievement Progress Overlay</h3>
-                <p>Shows unlocked achievements and completion percentage.</p>
-              </div>
-              <Toggle checked={achievementProgressOverlayEnabled} onchange={(enabled) => settingsStore.setAchievementProgressOverlayEnabled(enabled)} />
-            </div>
           </div>
 
         </div>
@@ -423,17 +393,6 @@
             {/each}
           </div>
         {/if}
-      {/if}
-      {#if selectedView === 'Kills'}
-        <div class="overlay-settings-panel">
-          <div class="overlay-settings-heading">
-            <div>
-              <h3>Total Monster Kills Overlay</h3>
-              <p>Shows synced/live account-wide monster kills.</p>
-            </div>
-            <Toggle checked={monsterKillsOverlayEnabled} onchange={(enabled) => settingsStore.setMonsterKillsOverlayEnabled(enabled)} />
-          </div>
-        </div>
       {/if}
       <div class="achievement-list">
         {#each visibleCategoryProgress as achievement (achievement.id)}

@@ -71,6 +71,12 @@ ItemDisplay[hfcr]: %BORDER-68%%ORANGE%  %NAME%  %ORANGE%
 //Cinder Cluster
 ItemDisplay[hfmx]: %SOUNDID-4715%%BORDER-68%%ORANGE%  %NAME%  %ORANGE% 
 
+// Ornate Charms - Magic Unid
+ItemDisplay[MAG !ID cm4]: %BLUE% %NAME% %BLUE%
+
+// Ornate Charms - Unique Unid
+ItemDisplay[UNI !ID cm4]: %GOLD%*** %NAME% *** %GOLD%
+
 // Mythic jewel ---------------------------------------------------------
 
 ItemDisplay[mjw MAG !ID ALVL>90]: %SOUNDID-248%%GOLD%**%BLUE% %NAME% hi alvl:%ALVL%%GOLD%**

@@ -35,7 +35,6 @@
     { id: 'overview', label: 'Overview' },
     { id: 'runeword-planner', label: 'What RW Can I Make?' },
     { id: 'import', label: 'Install Auto Grail Tracker' },
-    { id: 'overlay', label: 'Overlay Settings' },
     { id: 'notifications', label: 'Notifications' },
     { id: 'backup', label: 'Backup' },
   ];

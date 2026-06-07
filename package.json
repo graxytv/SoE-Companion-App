@@ -1,6 +1,6 @@
 {
   "name": "soe-companion",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "type": "module",
   "private": true,
   "description": "Sanctuary of Exile companion app for grail tracking, drops, achievements, filters, sounds, and overlays",
@@ -10,6 +10,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "preview": "vite preview",
     "test:gsf": "node scripts/verify-gsf-tracker.mjs",
+    "test:filter-tracking": "node scripts/verify-filter-tracking.mjs",
     "test:timers": "node scripts/verify-drops-tracker-timers.mjs",
     "tauri": "tauri",
     "version": "node scripts/sync-version.mjs"
