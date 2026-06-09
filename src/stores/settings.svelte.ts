@@ -3054,23 +3054,6 @@ class SettingsStore {
     });
   }
 
-  resetAccountStatsAchievementProgress(): void {
-    const stats = normalizeAchievementStats(this._settings.achievementStats);
-    const unlocked = Object.fromEntries(
-      Object.entries(stats.unlocked).filter(([id]) => !id.startsWith("kills-") && !id.startsWith("boss-")),
-    );
-    const history = stats.history.filter(
-      (entry) => entry.category !== "Kills" && entry.category !== "Bossing",
-    );
-    this.setAchievementStats({
-      ...stats,
-      totalKills: 0,
-      bossKills: {},
-      unlocked,
-      history,
-    });
-  }
-
   updateAchievementStats(partial: Partial<AchievementStats>): void {
     this.setAchievementStats({
       ...this._settings.achievementStats,

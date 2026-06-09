@@ -3,24 +3,8 @@
   import { Button, HotkeyInput, ThemeToggle, Toggle, UpdateButton } from '../components';
   import { settingsStore, type HotkeyConfig } from '../stores';
 
-  interface Props {
-    gameStatus?: 'unknown' | 'ingame' | 'menu';
-  }
-
-  interface AccountStatsResetResult {
-    stashPath: string;
-    backupPath: string;
-    previousTotalKills: number;
-    checksum: string;
-  }
-
-  let { gameStatus = 'unknown' }: Props = $props();
-
   let saveExitAutomationStatus = $state('');
   let newGameAutomationOpen = $state(false);
-  let resettingAccountStats = $state(false);
-  let confirmAccountStatsReset = $state(false);
-  let accountStatsMessage = $state('');
 
   type HotkeyId = 'toggleWindow';
   interface HotkeyRow {
@@ -106,41 +90,9 @@
     }
   }
 
-  async function resetAccountStats(): Promise<void> {
-    resettingAccountStats = true;
-    accountStatsMessage = 'Resetting account stats...';
-    try {
-      const result = await invoke<AccountStatsResetResult>('reset_accountstats_stash', {
-        stashPath: settingsStore.settings.runewordPlannerStashPath,
-      });
-      settingsStore.resetAccountStatsAchievementProgress();
-      accountStatsMessage = `Reset account stats from ${result.previousTotalKills.toLocaleString()} Monster Kills. Backup saved to app data.`;
-      confirmAccountStatsReset = false;
-    } catch (error) {
-      accountStatsMessage = String(error);
-    } finally {
-      resettingAccountStats = false;
-    }
-  }
-
 </script>
 
 <section class="tab-content">
-  {#if confirmAccountStatsReset}
-    <div class="confirm-backdrop" role="presentation">
-      <div class="confirm-dialog" role="dialog" aria-modal="true" aria-label="Reset account stats">
-        <h3>Reset Account Stats?</h3>
-        <p>This cannot be undone. Diablo II must be closed before resetting account stats.</p>
-        <div class="confirm-actions">
-          <Button variant="secondary" size="sm" onclick={() => (confirmAccountStatsReset = false)}>Cancel</Button>
-          <Button variant="danger" size="sm" disabled={resettingAccountStats} onclick={resetAccountStats}>
-            {resettingAccountStats ? 'Resetting...' : 'Reset Account Stats'}
-          </Button>
-        </div>
-      </div>
-    </div>
-  {/if}
-
   <div class="settings-section">
     <h2 class="section-title">Appearance</h2>
     <div class="setting-row">
@@ -273,31 +225,6 @@
     </div>
   </div>
 
-  <div class="settings-section accountstats-panel">
-    <div>
-      <h2 class="section-title">Reset Account Stats</h2>
-      <p class="section-description">Reset the account-stat stash data and SoE Companion account settings used by achievement tracking.</p>
-    </div>
-
-    <div class="accountstats-actions">
-      <div class="reset-accountstats-block">
-        <Button
-          variant="danger"
-          size="sm"
-          disabled={gameStatus !== 'unknown' || resettingAccountStats}
-          onclick={() => (confirmAccountStatsReset = true)}
-        >
-          Reset Account Stats
-        </Button>
-        <small>Game must be closed</small>
-      </div>
-    </div>
-
-    {#if accountStatsMessage}
-      <p class="accountstats-message">{accountStatsMessage}</p>
-    {/if}
-  </div>
-
 </section>
 
 <style>
@@ -378,67 +305,4 @@
     font-size: 12px;
   }
 
-  .accountstats-panel {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: var(--space-3);
-  }
-
-  .accountstats-actions {
-    display: grid;
-    gap: var(--space-2);
-    min-width: 170px;
-  }
-
-  .reset-accountstats-block small,
-  .accountstats-message {
-    color: var(--text-secondary);
-    font-size: 12px;
-  }
-
-  .reset-accountstats-block {
-    display: grid;
-    gap: 4px;
-    justify-items: center;
-  }
-
-  .accountstats-message {
-    grid-column: 1 / -1;
-    margin: 0;
-  }
-
-  .confirm-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 1000;
-    display: grid;
-    place-items: center;
-    background: rgba(0, 0, 0, 0.62);
-  }
-
-  .confirm-dialog {
-    width: min(420px, calc(100vw - 36px));
-    display: grid;
-    gap: var(--space-3);
-    padding: var(--space-5);
-    border: 1px solid var(--accent-primary);
-    background: var(--bg-secondary);
-    box-shadow: var(--shadow-lg);
-  }
-
-  .confirm-dialog h3,
-  .confirm-dialog p {
-    margin: 0;
-  }
-
-  .confirm-dialog p {
-    color: var(--text-secondary);
-  }
-
-  .confirm-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-2);
-  }
 </style>

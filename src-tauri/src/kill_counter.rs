@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,15 +32,6 @@ pub struct AccountStatsLiveDebug {
     pub candidates: Vec<AccountStatsMemoryCandidate>,
     pub exact_matches: Vec<AccountStatsMemoryCandidate>,
     pub errors: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountStatsResetResult {
-    pub stash_path: String,
-    pub backup_path: String,
-    pub previous_total_kills: u64,
-    pub checksum: String,
 }
 
 #[cfg(target_os = "windows")]
@@ -272,9 +262,7 @@ fn start_stash_accountstats_poll_thread(
 
 #[cfg(target_os = "windows")]
 mod windows_impl {
-    use super::{
-        AccountStatsLiveDebug, AccountStatsMemoryCandidate, AccountStatsResetResult, KillSyncResult,
-    };
+    use super::{AccountStatsLiveDebug, AccountStatsMemoryCandidate, KillSyncResult};
     use crate::logger::info as log_info;
     use crate::offsets::{d2client, unit};
     use crate::process::D2Context;
@@ -341,13 +329,7 @@ mod windows_impl {
     const STASH_DEATHS: usize = 0x34;
     const STASH_MAP_BOSS: usize = 0x36;
     const STASH_DUNGEON_BOSS: usize = 0x38;
-    const STASH_SIZE_OFFSET: usize = 0x08;
     const STASH_CHECKSUM_OFFSET: usize = 0x0c;
-    const STASH_ACCOUNT_BLOCK_OFFSET: usize = 0x12;
-    const STASH_ACCOUNT_BLOCK_LEN: usize = 0x3e;
-    const STASH_ACCOUNT_EXTRA_OFFSET: usize = 0x52;
-    const STASH_ACCOUNT_EXTRA_LEN: usize = 0xdc;
-    const STASH_ITEM_SECTION_OFFSET: usize = STASH_ACCOUNT_EXTRA_OFFSET + STASH_ACCOUNT_EXTRA_LEN;
 
     fn diablo_window() -> Result<HWND, String> {
         let class_name: Vec<u16> = OsStr::new("Diablo II")
@@ -597,14 +579,6 @@ mod windows_impl {
         ]) as u64
     }
 
-    fn write_u32_at(bytes: &mut [u8], offset: usize, value: u32) -> Result<(), String> {
-        if offset + 4 > bytes.len() {
-            return Err("Shared stash account stats header is too short.".to_string());
-        }
-        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-        Ok(())
-    }
-
     fn compute_stash_checksum(bytes: &[u8]) -> u32 {
         let mut checksum: u32 = 0;
         for (offset, byte) in bytes.iter().enumerate() {
@@ -634,10 +608,6 @@ mod windows_impl {
             ));
         }
         Ok(())
-    }
-
-    fn game_is_running() -> bool {
-        D2Context::new().is_ok()
     }
 
     pub(super) fn read_accountstats_stash(
@@ -1590,82 +1560,6 @@ mod windows_impl {
         })
     }
 
-    pub fn reset_accountstats_stash(
-        stash_path: Option<String>,
-        backup_dir: PathBuf,
-    ) -> Result<AccountStatsResetResult, String> {
-        if game_is_running() {
-            return Err("Close Diablo II before resetting account stats.".to_string());
-        }
-
-        let Some(path) = selected_or_detected_stash_path(stash_path) else {
-            return Err("No pd2_shared.stash file was found.".to_string());
-        };
-        if !path.is_file() {
-            return Err(format!(
-                "Selected shared stash file does not exist: {}",
-                path.display()
-            ));
-        }
-
-        let previous = read_accountstats_stash(Some(path.to_string_lossy().to_string()))?;
-        let mut bytes = fs::read(&path)
-            .map_err(|e| format!("Failed to read shared stash {}: {}", path.display(), e))?;
-        if bytes.len() < STASH_ITEM_SECTION_OFFSET + 2
-            || bytes.get(0..4) != Some(&[0x55, 0xbb, 0x55, 0xbb])
-            || bytes.get(STASH_ITEM_SECTION_OFFSET..STASH_ITEM_SECTION_OFFSET + 2)
-                != Some(&[b'J', b'M'])
-        {
-            return Err(format!(
-                "Shared stash did not look like the expected PD2 account stats file: {}",
-                path.display()
-            ));
-        }
-
-        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-        let backup_dir = backup_dir.join("accountstats-backups");
-        fs::create_dir_all(&backup_dir).map_err(|e| {
-            format!(
-                "Failed to create account stats backup folder {}: {}",
-                backup_dir.display(),
-                e
-            )
-        })?;
-        let backup_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("pd2_shared.stash");
-        let backup_path = backup_dir.join(format!("{backup_name}.accountstats-backup-{stamp}"));
-        fs::copy(&path, &backup_path)
-            .map_err(|e| format!("Failed to create backup {}: {}", backup_path.display(), e))?;
-
-        bytes[STASH_ACCOUNT_BLOCK_OFFSET..STASH_ACCOUNT_BLOCK_OFFSET + STASH_ACCOUNT_BLOCK_LEN]
-            .fill(0);
-        bytes[STASH_ACCOUNT_EXTRA_OFFSET..STASH_ACCOUNT_EXTRA_OFFSET + STASH_ACCOUNT_EXTRA_LEN]
-            .fill(0);
-
-        let size = bytes.len() as u32;
-        write_u32_at(&mut bytes, STASH_SIZE_OFFSET, size)?;
-        write_u32_at(&mut bytes, STASH_CHECKSUM_OFFSET, 0)?;
-        let checksum = compute_stash_checksum(&bytes);
-        write_u32_at(&mut bytes, STASH_CHECKSUM_OFFSET, checksum)?;
-        validate_stash_checksum(&bytes)?;
-
-        fs::write(&path, &bytes).map_err(|e| {
-            format!(
-                "Failed to write reset shared stash {}: {}",
-                path.display(),
-                e
-            )
-        })?;
-
-        Ok(AccountStatsResetResult {
-            stash_path: path.display().to_string(),
-            backup_path: backup_path.display().to_string(),
-            previous_total_kills: previous.total_kills,
-            checksum: format!("0x{checksum:08x}"),
-        })
-    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1693,19 +1587,6 @@ pub fn debug_accountstats_live(
     windows_impl::debug_accountstats_live(current_kills, stash_path, expected_kills)
 }
 
-#[cfg(target_os = "windows")]
-#[tauri::command]
-pub fn reset_accountstats_stash(
-    app: tauri::AppHandle,
-    stash_path: Option<String>,
-) -> Result<AccountStatsResetResult, String> {
-    let backup_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve SoE Companion app data folder: {}", e))?;
-    windows_impl::reset_accountstats_stash(stash_path, backup_dir)
-}
-
 #[cfg(not(target_os = "windows"))]
 #[tauri::command]
 pub fn sync_kills_all(_current_kills: u64) -> Result<KillSyncResult, String> {
@@ -1729,13 +1610,4 @@ pub fn debug_accountstats_live(
     _expected_kills: Option<u64>,
 ) -> Result<AccountStatsLiveDebug, String> {
     Err("Kill syncing is only supported on Windows.".to_string())
-}
-
-#[cfg(not(target_os = "windows"))]
-#[tauri::command]
-pub fn reset_accountstats_stash(
-    _app: tauri::AppHandle,
-    _stash_path: Option<String>,
-) -> Result<AccountStatsResetResult, String> {
-    Err("Account stats reset is only supported on Windows.".to_string())
 }

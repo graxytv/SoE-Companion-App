@@ -115,7 +115,7 @@
 
   function fateCardSyncStatus(result: RuneStashSyncResult): string {
     if (result.fate_card_sync_available === false) {
-      return 'No pd2_shared.stash file was found. Fate Card stash counts were cleared.';
+      return 'No pd2_shared.stash file was found. In-app Fate Card stash counts were cleared.';
     }
     const total = Object.values(result.fate_card_counts ?? {}).reduce<number>(
       (sum, count) => sum + (Number(count) || 0),
@@ -145,7 +145,7 @@
   function resetFateCardCounts(): void {
     settingsStore.setFateCardCounts({});
     lastSyncAt = new Date().toISOString();
-    syncMessage = 'Fate Card stash counts reset to 0. They will refill automatically when pd2_shared.stash has cards again.';
+    syncMessage = 'In-app Fate Card stash counts reset to 0. This does not modify pd2_shared.stash; counts refill automatically when the shared stash has cards again.';
   }
 
   function openItemDetails(item: Parameters<typeof detailsForGrailItem>[0]): void {
@@ -243,7 +243,7 @@
           </p>
         </div>
         <div class="action-row">
-          <Button variant="danger" size="sm" onclick={resetFateCardCounts}>Reset Fate Cards</Button>
+          <Button variant="danger" size="sm" onclick={resetFateCardCounts}>Reset App Fate Card Counts</Button>
         </div>
       </div>
 

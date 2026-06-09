@@ -1952,7 +1952,6 @@ fn main() {
             kill_counter::sync_kills_all,
             kill_counter::sync_accountstats_kills,
             kill_counter::debug_accountstats_live,
-            kill_counter::reset_accountstats_stash,
             character_levels::sync_character_levels,
             updater::check_for_updates,
             updater::start_update,

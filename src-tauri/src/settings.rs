@@ -1496,7 +1496,7 @@ fn merge_json_patch(base: &mut serde_json::Value, patch: serde_json::Value) {
 
     for (key, value) in patch_obj {
         if key == "holyGrailFound" {
-            base_obj.insert(key.clone(), value.clone());
+            merge_holy_grail_found_json(base_obj, value);
             continue;
         }
         base_obj.insert(key.clone(), value.clone());

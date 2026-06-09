@@ -423,7 +423,7 @@
                 {#if tab === "home"}
                     <HomeTab {gameStatus} {scannerStatus} onNavigate={(tabId) => { activeTab = tabId; }} />
                 {:else if tab === "general"}
-                    <GeneralTab {gameStatus} />
+                    <GeneralTab />
                 {:else if tab === "overlays"}
                     <OverlaysTab />
                 {:else if tab === "lootfilter"}

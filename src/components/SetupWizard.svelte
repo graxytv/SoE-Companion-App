@@ -415,7 +415,7 @@
             <p>This wizard checks the launcher, grail tracker, filters, shared stash, notifications, overlays, and the new-game automation. Nothing risky is installed or changed unless you press the button for that step.</p>
             <div class="fresh-run-note">
               <strong>Best used on a fresh run.</strong>
-              <span>SoE Companion reads local character and shared-stash data that may include older characters from previous SoE patches. For the cleanest achievement, grail, rune, and account-stat experience, back up your <code>Diablo II\Save</code> folder first, including all character files and <code>pd2_shared.stash</code>, then start fresh with an empty Save folder.</span>
+              <span>SoE Companion only reads local character and shared-stash data; it does not modify <code>pd2_shared.stash</code>. If you manually change your <code>Diablo II\Save</code> folder for a fresh run, back it up first, including all character files and <code>pd2_shared.stash</code>.</span>
             </div>
             <p class="quiet">You can close this any time and come back from the Home tab.</p>
           </div>
