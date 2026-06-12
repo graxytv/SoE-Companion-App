@@ -1,6 +1,6 @@
 [package]
 name = "soe-companion"
-version = "1.1.8"
+version = "1.1.9"
 description = "Sanctuary of Exile companion app for grail tracking, drops, achievements, filters, sounds, and overlays"
 authors = []
 license = ""
@@ -41,6 +41,7 @@ windows = { version = "0.58", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
   "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
 ] }
 
 [profile.release]

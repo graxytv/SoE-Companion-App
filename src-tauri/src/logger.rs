@@ -10,14 +10,14 @@ use chrono::Local;
 
 /// Simple file logger used by the backend.
 ///
-/// Writes log lines to `d2mxlutils.log` inside the app-data directory
-/// (`%APPDATA%\com.d2mxlutils.app` on Windows), matching the location used
+/// Writes log lines to `soe-companion.log` inside the app-data directory
+/// (`%APPDATA%\com.soecompanion.app` on Windows), matching the location used
 /// by `settings.json`, `profiles/`, and `items-cache.json`. Falls back to the
 /// directory next to the executable if `%APPDATA%` cannot be resolved.
 
-const APP_DIR_NAME: &str = "com.d2mxlutils.app";
-const LOG_FILE_NAME: &str = "d2mxlutils.log";
-const ROTATED_LOG_FILE_NAME: &str = "d2mxlutils.log.1";
+const APP_DIR_NAME: &str = "com.soecompanion.app";
+const LOG_FILE_NAME: &str = "soe-companion.log";
+const ROTATED_LOG_FILE_NAME: &str = "soe-companion.log.1";
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const THROTTLE_WINDOW: Duration = Duration::from_secs(60);
 

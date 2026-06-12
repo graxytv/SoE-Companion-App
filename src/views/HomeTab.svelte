@@ -42,8 +42,10 @@
     } catch (err) {
       const message = String(err);
       const selectedPath = window.prompt(
-        `${message}\n\nEnter the full path to pd2-soe-launcher.exe:`,
-        settingsStore.settings.soeLauncherPath ?? 'C:\\Program Files\\PD2 Sanctuary of Exile\\pd2-soe-launcher.exe',
+        `${message}\n\nEnter the full path to pd2-soe-launcher.exe, or paste your SoE install / ProjectD2 folder:`,
+        settingsStore.settings.soeLauncherPath ??
+          settingsStore.settings.projectD2Path ??
+          'C:\\Program Files\\PD2 Sanctuary of Exile\\pd2-soe-launcher.exe',
       );
       const path = selectedPath?.trim();
       if (!path) {

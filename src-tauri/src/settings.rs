@@ -359,6 +359,14 @@ pub struct AppSettings {
     #[serde(default)]
     pub drops_tracker_recent_items: Vec<DropTrackerRecentItem>,
 
+    /// Persistent hook-log event IDs that have already been applied.
+    #[serde(default)]
+    pub processed_hook_drop_ids: Vec<String>,
+
+    /// Last byte offset drained from the hook drop log.
+    #[serde(default)]
+    pub hook_drop_log_cursor: u64,
+
     /// When true, suppress repeated sightings of the same item during a single run.
     #[serde(default = "default_true")]
     pub drops_tracker_prevent_duplicates: bool,
@@ -478,11 +486,6 @@ pub struct AppSettings {
     /// Maximum wait for D2Client to report that gameplay has ended.
     #[serde(default = "default_save_exit_automation_main_menu_wait_ms")]
     pub save_exit_automation_main_menu_wait_ms: u32,
-
-    /// When true, a lightweight watcher asks the frontend to sync after
-    /// Diablo II loading/zone transitions settle.
-    #[serde(default)]
-    pub zone_transition_sync_enabled: bool,
 
     /// When true, GSF matching and notifications are enabled.
     #[serde(default = "default_true")]
@@ -781,11 +784,10 @@ const DROP_TRACKER_CATEGORY_KEYS: &[&str] = &[
     "unique",
     "hellforged",
     "sets",
-    "rare",
-    "magic",
     "lowRune",
     "midRune",
     "highRune",
+    "runewords",
     "charm",
     "jewel",
     "perfectGem",
@@ -804,7 +806,7 @@ fn default_drops_tracker_categories() -> HashMap<String, bool> {
         .map(|key| {
             (
                 (*key).to_string(),
-                matches!(*key, "unique" | "hellforged" | "sets" | "fateCard"),
+                matches!(*key, "unique" | "hellforged" | "sets" | "runewords" | "fateCard"),
             )
         })
         .collect()
@@ -876,6 +878,8 @@ impl Default for AppSettings {
             drops_tracker_counts: HashMap::new(),
             total_drops_tracker_counts: HashMap::new(),
             drops_tracker_recent_items: Vec::new(),
+            processed_hook_drop_ids: Vec::new(),
+            hook_drop_log_cursor: 0,
             drops_tracker_prevent_duplicates: default_true(),
             drops_tracker_muling_mode: false,
             drops_tracker_muling_started_at_ms: None,
@@ -907,7 +911,6 @@ impl Default for AppSettings {
             save_exit_automation_delay_ms: default_save_exit_automation_delay_ms(),
             save_exit_automation_main_menu_wait_ms: default_save_exit_automation_main_menu_wait_ms(
             ),
-            zone_transition_sync_enabled: true,
             gsf_enabled: true,
             gsf_notification_enabled: true,
             gsf_sound_slot: None,
@@ -1454,6 +1457,30 @@ fn migrate_settings_value(mut value: serde_json::Value) -> serde_json::Value {
         );
     }
 
+    let runeword_tracking_migrated = settings
+        .get("runewordDropsTrackerDefaultMigrated")
+        .and_then(|raw| raw.as_bool())
+        .unwrap_or(false);
+
+    if !runeword_tracking_migrated {
+        if let Some(categories) = settings
+            .get_mut("dropsTrackerCategories")
+            .and_then(|raw| raw.as_object_mut())
+        {
+            categories.insert("runewords".to_string(), serde_json::Value::Bool(true));
+        }
+        if let Some(categories) = settings
+            .get_mut("totalDropsTrackerCategories")
+            .and_then(|raw| raw.as_object_mut())
+        {
+            categories.insert("runewords".to_string(), serde_json::Value::Bool(true));
+        }
+        settings.insert(
+            "runewordDropsTrackerDefaultMigrated".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+
     let fate_card_stash_counts_paused = settings
         .get("fateCardStashCounterMapPaused")
         .and_then(|raw| raw.as_bool())
@@ -1492,28 +1519,6 @@ fn migrate_settings_value(mut value: serde_json::Value) -> serde_json::Value {
         }
         settings.insert(
             "fateCardLiveDropCountsSeparated".to_string(),
-            serde_json::Value::Bool(true),
-        );
-    }
-
-    let zone_transition_sync_defaulted = settings
-        .get("zoneTransitionSyncDefaultedOn")
-        .and_then(|raw| raw.as_bool())
-        .unwrap_or(false);
-
-    if !zone_transition_sync_defaulted {
-        if !settings
-            .get("zoneTransitionSyncEnabled")
-            .and_then(|raw| raw.as_bool())
-            .unwrap_or(true)
-        {
-            settings.insert(
-                "zoneTransitionSyncEnabled".to_string(),
-                serde_json::Value::Bool(true),
-            );
-        }
-        settings.insert(
-            "zoneTransitionSyncDefaultedOn".to_string(),
             serde_json::Value::Bool(true),
         );
     }

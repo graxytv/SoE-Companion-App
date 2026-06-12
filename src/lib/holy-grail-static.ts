@@ -157,7 +157,7 @@ export const STATIC_SET_ITEMS = [
   "Iratha's Cuff", "Iratha's Coil", "Iratha's Cord", "Isenhart's Lightbrand",
   "Isenhart's Parry", "Isenhart's Case", "Isenhart's Horns", "M'avina's True Sight",
   "M'avina's Embrace", "M'avina's Icy Clutch", "M'avina's Tenet", "M'avina's Caster",
-  "McAuley's Paragon", "McAuley's Riprap", "McAuley's Taboo", "McAuley's Superstition",
+  "Sander's Paragon", "Sander's Riprap", "Sander's Taboo", "Sander's Superstition",
   "Milabrega's Orb", "Milabrega's Rod", "Milabrega's Diadem", "Milabrega's Robe",
   "Naj's Puzzler", "Naj's Light Plate", "Naj's Circlet", "Natalya's Totem",
   "Natalya's Mark", "Natalya's Shadow", "Natalya's Soul", "Guillaume's Face",

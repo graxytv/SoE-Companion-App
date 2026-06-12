@@ -116,6 +116,7 @@
   const pendingNewGrailKeys = new Set<string>();
 
   let items = $state<ItemWithState[]>([]);
+  let diagnosticNotificationActive = $state(false);
   let achievementPopups = $state<Array<AchievementUnlockEntry & { popupId: string; exiting?: boolean }>>([]);
 
   // Read settings from store (reactive)
@@ -244,6 +245,16 @@
         monsterKillsOverlayEnabled
       ),
   );
+  let trackerWindowVisibleCardCount = $derived(
+    (dropsTrackerEnabled ? 1 : 0) +
+      (totalDropsTrackerEnabled ? 1 : 0) +
+      (holyGrailOverlayEnabled ? 1 : 0) +
+      (materialTrackerOverlayEnabled ? 1 : 0) +
+      (runeTrackerOverlayEnabled ? 1 : 0) +
+      (fateCardTrackerOverlayEnabled ? 1 : 0) +
+      (achievementProgressOverlayEnabled ? 1 : 0) +
+      (monsterKillsOverlayEnabled ? 1 : 0),
+  );
   let renderGameTrackerCards = $derived(renderGameTrackers || (mode === 'game' && editActive));
   let transparentTrackerTimerCardVisible = $derived(
     mode === 'game' &&
@@ -308,10 +319,9 @@
 
   function newHolyGrailKeyForDrop(item: ItemDrop): string | null {
     if (dropsTrackerMulingMode) return null;
-    if (isUnidentifiedUniqueSetDrop(item)) return null;
-    if (!hasTrustedExactUniqueSetName(item)) return null;
     const grailItem = holyGrailItemFromDrop(item);
     if (!grailItem || grailItem.category === 'fateCards') return null;
+    if (!hasTrustedExactUniqueSetName(item)) return null;
     if (!settingsStore.isHolyGrailDropNew(item)) return null;
     return grailItem.key;
   }
@@ -944,12 +954,12 @@
   }
 
   function trackedItemDisplayName(item: ItemDrop): string {
+    const codeOnlyGrailItem = holyGrailItemFromDrop(item);
+    if (codeOnlyGrailItem && (item.item_code || item.itemCode || isUnidentifiedUniqueSetDrop(item))) {
+      return codeOnlyGrailItem.name;
+    }
     if (isUnidentifiedUniqueSetDrop(item)) {
       return `Unidentified ${cleanTrackedItemName(item.base_name || item.name || 'item')}`;
-    }
-    const codeOnlyGrailItem = holyGrailItemFromDrop(item);
-    if (codeOnlyGrailItem && (item.item_code || item.itemCode)) {
-      return codeOnlyGrailItem.name;
     }
     const soe13CodeName = soe13CodeDisplayName(item);
     if (soe13CodeName && (!item.name || isPlaceholderItemName(item.name))) {
@@ -980,8 +990,9 @@
   }
 
   function hasTrustedExactUniqueSetName(item: ItemDrop): boolean {
-    if (!isUniqueOrSetDrop(item) || !item.is_identified) return true;
     if (holyGrailItemFromDrop(item)) return true;
+    if (!isUniqueOrSetDrop(item)) return true;
+    if (!item.is_identified) return false;
     const source = String(item.source ?? '').toLowerCase();
     if (source === 'grail-log') return true;
     if (cleanTrackedItemName(item.canonical_name || item.canonicalName || '')) return true;
@@ -999,11 +1010,12 @@
     if (grailItem?.category === 'su') return ['unique'];
     if (grailItem?.category === 'ssu') return ['hellforged'];
     if (grailItem?.category === 'sets') return ['sets'];
+    if (grailItem?.category === 'runewords') return ['runewords'];
     if (grailItem?.category === 'fateCards') return ['fateCard'];
     if (grailItem?.category === 'hatredOrbs') return ['hatredOrb'];
     if (grailItem?.category === 'essences') return ['essence'];
     if (grailItem?.category === 'ascendancy') return ['ascendancy'];
-    if (!isUnidentifiedUniqueSetDrop(item) && hasTrustedExactUniqueSetName(item)) {
+    if (hasTrustedExactUniqueSetName(item)) {
       return categorizeDrop(item);
     }
     return String(item.quality ?? '').toLowerCase() === 'set' ? ['sets'] : ['unique'];
@@ -1041,6 +1053,7 @@
 
     settingsStore.recordLiveDrop({
       displayName,
+      drop: item,
       categories,
       isNewGrail: isNewGrailItem,
       source: debugSource,
@@ -1056,7 +1069,7 @@
 
   function recordHolyGrailDrop(item: ItemDrop): boolean {
     if (dropsTrackerMulingMode) return false;
-    if (isUnidentifiedUniqueSetDrop(item)) return false;
+    if (!holyGrailItemFromDrop(item)) return false;
     if (!hasTrustedExactUniqueSetName(item)) return false;
     const isNewGrailItem = settingsStore.recordHolyGrailDrop(item);
     if (isNewGrailItem) {
@@ -1271,6 +1284,27 @@
       showSyncedNewGrailNotification(event.payload);
     }).then(u => unlisteners.push(u));
 
+    listen('overlay-test-notification', () => {
+      if (mode !== 'game') return;
+      syntheticNotificationId -= 1;
+      diagnosticNotificationActive = true;
+      const duration = Math.max(3500, notificationDuration);
+      addItem({
+        unit_id: syntheticNotificationId,
+        class: 0,
+        quality: 'Overlay Test',
+        name: 'SoE Companion Overlay Test',
+        base_name: 'Diagnostics',
+        stats: 'If you can see this, the notification overlay can render.',
+        is_ethereal: false,
+        is_identified: true,
+        filter: { color: 'gold', sound: null, display_stats: false },
+      }, duration);
+      window.setTimeout(() => {
+        diagnosticNotificationActive = false;
+      }, duration + 400);
+    }).then(u => unlisteners.push(u));
+
     const testAchievementPopup = (event: Event) => {
       if (mode !== 'game') return;
       const custom = event as CustomEvent<AchievementUnlockEntry>;
@@ -1393,8 +1427,14 @@
 </script>
 
 <main class="overlay" class:unlocked={trackerEditActive} class:layout-editing={editActive} class:tracker-window={mode === 'tracker'}>
+  {#if mode === 'tracker'}
+    <div class="tracker-window-status" aria-live="polite">
+      <strong>Tracker Loaded</strong>
+      <span>{trackerWindowVisibleCardCount} {trackerWindowVisibleCardCount === 1 ? 'card' : 'cards'}</span>
+    </div>
+  {/if}
   {#if mode === 'game'}
-    {#if notificationOverlayEnabled && (!editActive || notificationLayoutItems.length > 0)}
+    {#if (notificationOverlayEnabled || diagnosticNotificationActive) && (!editActive || notificationLayoutItems.length > 0)}
       <NotificationStack
         items={notificationLayoutItems}
         x={notificationX}
@@ -1452,6 +1492,12 @@
     }} />
   {/if}
   <div class="tracker-window-content" bind:this={trackerWindowScrollEl} onwheel={scrollTrackerWindow}>
+  {#if mode === 'tracker' && trackerWindowVisibleCardCount === 0}
+    <div class="tracker-window-empty">
+      <strong>Tracker overlay loaded.</strong>
+      <span>No tracker cards are enabled.</span>
+    </div>
+  {/if}
   <!-- Drops Tracker overlays -->
   {#if dropsTrackerEnabled && (renderGameTrackerCards || renderTrackerWindow)}
     <div class="tracker-overlay-position drop-tracker-left" class:unlocked={trackerEditActive} style={trackerOverlayStyle(dropsTrackerOverlayPosition, 'drops')}>
@@ -1688,6 +1734,36 @@
     overflow: hidden;
   }
 
+  .tracker-window-status {
+    position: fixed;
+    top: 8px;
+    right: 10px;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: calc(100vw - 20px);
+    padding: 4px 8px;
+    border: 1px solid rgba(255, 176, 46, 0.45);
+    border-radius: 4px;
+    background: rgba(8, 3, 3, 0.9);
+    color: var(--text-primary, #f6e7c4);
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    line-height: 1.2;
+    pointer-events: none;
+    user-select: none;
+  }
+
+  .tracker-window-status strong {
+    color: var(--accent-gold, #ffb02e);
+    text-transform: uppercase;
+  }
+
+  .tracker-window-status span {
+    color: var(--text-muted, #b48b69);
+  }
+
   .tracker-window-content {
     display: contents;
   }
@@ -1705,6 +1781,28 @@
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior: contain;
+  }
+
+  .tracker-window-empty {
+    width: min(320px, calc(100vw - 20px));
+    box-sizing: border-box;
+    display: grid;
+    gap: 4px;
+    padding: 14px;
+    border: 1px solid rgba(255, 176, 46, 0.45);
+    border-radius: 6px;
+    background: rgba(8, 3, 3, 0.9);
+    color: var(--text-primary, #f6e7c4);
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+  }
+
+  .tracker-window-empty strong {
+    color: var(--accent-gold, #ffb02e);
+  }
+
+  .tracker-window-empty span {
+    color: var(--text-muted, #b48b69);
   }
 
   /* ── Drops Tracker Counters ────────────────────────────────────── */

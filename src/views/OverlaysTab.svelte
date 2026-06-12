@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { emit, listen } from '@tauri-apps/api/event';
+  import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { onMount } from 'svelte';
   import { Button, HotkeyInput, SubTabs, Toggle } from '../components';
   import { lootHistoryStore, settingsStore, type HotkeyConfig, type OverlayPosition } from '../stores';
@@ -24,9 +25,11 @@
     fateCardTierKey,
     fateCardTierLabel,
   } from '../lib/soe-13-items';
+  import { OVERLAY_LAYOUT_WINDOWS, type OverlayLayoutKind } from '../lib/overlay-layout';
 
   type OverlayTab =
     | 'global'
+    | 'diagnostics'
     | 'notifications'
     | 'drops'
     | 'total'
@@ -41,6 +44,7 @@
 
   const overlayTabs: Array<{ id: OverlayTab; label: string }> = [
     { id: 'global', label: 'Global' },
+    { id: 'diagnostics', label: 'Diagnostics' },
     { id: 'notifications', label: 'Notifications' },
     { id: 'drops', label: 'Drops Tracker' },
     { id: 'total', label: 'Total Drops' },
@@ -54,11 +58,51 @@
     { id: 'muling', label: 'Muling Indicator' },
   ];
 
+  interface GameWindowRect {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  }
+
+  interface OverlayWindowDiagnostic {
+    label: string;
+    exists: boolean;
+    visible: boolean;
+    topmost: boolean;
+    click_through: boolean;
+    no_activate: boolean;
+    tool_window: boolean;
+    layered: boolean;
+    rect: GameWindowRect | null;
+    error: string | null;
+  }
+
+  interface OverlayDiagnostics {
+    game_found: boolean;
+    game_alive: boolean;
+    game_foreground: boolean;
+    game_rect: GameWindowRect | null;
+    monitor_rect: GameWindowRect | null;
+    game_matches_monitor: boolean;
+    always_show_overlays: boolean;
+    overlay_click_through: boolean;
+    overlay_was_visible: boolean;
+    overlay_styles_applied: boolean;
+    main_overlay: OverlayWindowDiagnostic;
+    editor_windows: OverlayWindowDiagnostic[];
+    warnings: string[];
+    error: string | null;
+  }
+
   const UNBOUND: HotkeyConfig = { keyCode: 0, modifiers: 0, display: 'None' };
 
   let activeOverlayTab = $state<OverlayTab>('global');
   let overlayLayoutEditing = $state(false);
   let overlayLayoutMessage = $state('');
+  let diagnostics = $state<OverlayDiagnostics | null>(null);
+  let diagnosticsBusy = $state(false);
+  let diagnosticsMessage = $state('');
   let materialSearch = $state('');
   let fateCardSearch = $state('');
 
@@ -119,6 +163,157 @@
     return Math.max(min, Math.min(max, Number.isFinite(value) ? value : min));
   }
 
+  function safeScaleFactor(scaleFactor: number): number {
+    return Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
+  }
+
+  function logicalGameRect(gameRect: GameWindowRect, scaleFactor: number): GameWindowRect {
+    const scale = safeScaleFactor(scaleFactor);
+    return {
+      ...gameRect,
+      width: Math.max(1, Math.round(gameRect.width / scale)),
+      height: Math.max(1, Math.round(gameRect.height / scale)),
+    };
+  }
+
+  function overlayLayoutEnabled(kind: OverlayLayoutKind): boolean {
+    if (kind === 'notifications') return settingsStore.settings.notificationOverlayEnabled;
+    if (kind === 'drops') return settingsStore.settings.dropsTrackerEnabled;
+    if (kind === 'total') return settingsStore.settings.totalDropsTrackerEnabled;
+    if (kind === 'grail') return settingsStore.settings.holyGrailOverlayEnabled;
+    if (kind === 'materials') return settingsStore.settings.materialTrackerOverlayEnabled;
+    if (kind === 'runes') return settingsStore.settings.runeTrackerOverlayEnabled;
+    if (kind === 'fate-cards') return settingsStore.settings.fateCardTrackerOverlayEnabled;
+    if (kind === 'achievements') return settingsStore.settings.achievementProgressOverlayEnabled;
+    if (kind === 'achievement-popup') return settingsStore.settings.achievementSettings.overlayEnabled;
+    if (kind === 'kills') return settingsStore.settings.monsterKillsOverlayEnabled;
+    return settingsStore.settings.mulingIndicatorOverlayEnabled;
+  }
+
+  function overlayLayoutPosition(kind: OverlayLayoutKind): OverlayPosition {
+    if (kind === 'drops') return settingsStore.settings.dropsTrackerOverlayPosition;
+    if (kind === 'total') return settingsStore.settings.totalDropsOverlayPosition;
+    if (kind === 'grail') return settingsStore.settings.holyGrailOverlayPosition;
+    if (kind === 'materials') return settingsStore.settings.materialTrackerOverlayPosition;
+    if (kind === 'runes') return settingsStore.settings.runeTrackerOverlayPosition;
+    if (kind === 'fate-cards') return settingsStore.settings.fateCardTrackerOverlayPosition;
+    if (kind === 'achievements') return settingsStore.settings.achievementProgressOverlayPosition;
+    if (kind === 'achievement-popup') return settingsStore.settings.achievementPopupOverlayPosition;
+    if (kind === 'kills') return settingsStore.settings.monsterKillsOverlayPosition;
+    if (kind === 'muling') return settingsStore.settings.mulingIndicatorOverlayPosition;
+    return { x: settingsStore.settings.notificationX, y: settingsStore.settings.notificationY };
+  }
+
+  function overlayLayoutWidth(kind: OverlayLayoutKind): number {
+    if (kind === 'notifications') return settingsStore.settings.notificationWidth;
+    if (kind === 'drops') return settingsStore.settings.dropsTrackerOverlayWidth;
+    if (kind === 'total') return settingsStore.settings.totalDropsOverlayWidth;
+    if (kind === 'grail') return settingsStore.settings.holyGrailOverlayWidth;
+    if (kind === 'materials') return settingsStore.settings.materialTrackerOverlayWidth;
+    if (kind === 'runes') return settingsStore.settings.runeTrackerOverlayWidth;
+    if (kind === 'fate-cards') return settingsStore.settings.fateCardTrackerOverlayWidth;
+    if (kind === 'achievements') return settingsStore.settings.achievementProgressOverlayWidth;
+    if (kind === 'achievement-popup') return settingsStore.settings.achievementPopupOverlayWidth;
+    if (kind === 'kills') return settingsStore.settings.monsterKillsOverlayWidth;
+    return settingsStore.settings.mulingIndicatorOverlayWidth;
+  }
+
+  function overlayLayoutHeight(kind: OverlayLayoutKind): number {
+    if (kind === 'notifications') return settingsStore.settings.notificationHeight;
+    if (kind === 'drops') return settingsStore.settings.dropsTrackerOverlayHeight;
+    if (kind === 'total') return settingsStore.settings.totalDropsOverlayHeight;
+    if (kind === 'grail') return settingsStore.settings.holyGrailOverlayHeight;
+    if (kind === 'materials') return settingsStore.settings.materialTrackerOverlayHeight;
+    if (kind === 'runes') return settingsStore.settings.runeTrackerOverlayHeight;
+    if (kind === 'fate-cards') return settingsStore.settings.fateCardTrackerOverlayHeight;
+    if (kind === 'achievements') return settingsStore.settings.achievementProgressOverlayHeight;
+    if (kind === 'achievement-popup') return settingsStore.settings.achievementPopupOverlayHeight;
+    if (kind === 'kills') return settingsStore.settings.monsterKillsOverlayHeight;
+    return settingsStore.settings.mulingIndicatorOverlayHeight;
+  }
+
+  function fallbackOverlayLayoutPosition(kind: OverlayLayoutKind, gameRect: GameWindowRect, width: number, height: number): OverlayPosition {
+    if (kind === 'total' || kind === 'runes') {
+      return { x: Math.max(0, gameRect.width - width - 12), y: kind === 'total' ? Math.max(0, gameRect.height - height - 12) : 12 };
+    }
+    if (kind === 'drops') return { x: 12, y: Math.max(0, gameRect.height - height - 12) };
+    if (kind === 'grail') return { x: 12, y: Math.max(0, gameRect.height - height - 220) };
+    if (kind === 'achievement-popup') return { x: Math.max(0, Math.round((gameRect.width - width) / 2)), y: 18 };
+    if (kind === 'muling') return { x: 12, y: Math.max(0, gameRect.height - height - 80) };
+    return { x: 12, y: 12 };
+  }
+
+  function overlayLayoutEditorEntry(definition: typeof OVERLAY_LAYOUT_WINDOWS[number], gameRect: GameWindowRect) {
+    const width = overlayLayoutWidth(definition.kind);
+    const height = overlayLayoutHeight(definition.kind);
+    if (definition.kind === 'notifications') {
+      return {
+        ...definition,
+        enabled: overlayLayoutEnabled(definition.kind),
+        x: Math.round((settingsStore.settings.notificationX / 100) * gameRect.width),
+        y: Math.round((settingsStore.settings.notificationY / 100) * gameRect.height),
+        width,
+        height,
+      };
+    }
+    const position = overlayLayoutPosition(definition.kind);
+    const fallback = fallbackOverlayLayoutPosition(definition.kind, gameRect, width, height);
+    return {
+      ...definition,
+      enabled: overlayLayoutEnabled(definition.kind),
+      x: typeof position.x === 'number' ? position.x : fallback.x,
+      y: typeof position.y === 'number' ? position.y : fallback.y,
+      width,
+      height,
+    };
+  }
+
+  async function hideOverlayLayoutEditorWindowsFromMain(): Promise<void> {
+    await Promise.all(
+      OVERLAY_LAYOUT_WINDOWS.map((definition) =>
+        invoke('set_overlay_editor_window_visible', {
+          label: definition.windowLabel,
+          visible: false,
+        }).catch((error) => {
+          console.error(`[OverlaysTab] Failed to hide ${definition.windowLabel}:`, error);
+        }),
+      ),
+    );
+  }
+
+  async function setOverlayLayoutEditorWindowsVisibleFromMain(visible: boolean): Promise<boolean> {
+    if (!visible) {
+      await hideOverlayLayoutEditorWindowsFromMain();
+      overlayLayoutMessage = '';
+      return true;
+    }
+
+    try {
+      const [physicalGameRect, scaleFactor] = await Promise.all([
+        invoke<GameWindowRect>('get_game_window_rect'),
+        getCurrentWebviewWindow().scaleFactor(),
+      ]);
+      const gameRect = logicalGameRect(physicalGameRect, scaleFactor);
+      const entries = OVERLAY_LAYOUT_WINDOWS.map((definition) => overlayLayoutEditorEntry(definition, gameRect));
+      for (const entry of entries) {
+        await invoke('set_overlay_editor_window_visible', {
+          label: entry.windowLabel,
+          visible: true,
+          x: entry.x,
+          y: entry.y,
+          width: entry.width,
+          height: entry.height,
+        });
+      }
+      overlayLayoutMessage = '';
+      return true;
+    } catch (error) {
+      await hideOverlayLayoutEditorWindowsFromMain();
+      overlayLayoutMessage = `Start Diablo II to edit overlay layout by dragging. ${error}`;
+      return false;
+    }
+  }
+
   function setNotificationDuration(value: number): void {
     settingsStore.set('notificationDuration', Math.floor(clampNumber(value, 1000, 30000)));
   }
@@ -145,8 +340,13 @@
 
   async function toggleOverlayLayoutEditor(): Promise<void> {
     const active = !overlayLayoutEditing;
+    const ok = await setOverlayLayoutEditorWindowsVisibleFromMain(active);
+    if (!ok) {
+      overlayLayoutEditing = false;
+      await emit('overlay-edit-mode', { active: false });
+      return;
+    }
     overlayLayoutEditing = active;
-    if (active) overlayLayoutMessage = '';
     await emit('overlay-edit-mode', { active });
   }
 
@@ -168,6 +368,117 @@
   function resetOverlayLayout(): void {
     settingsStore.resetDropTrackerOverlayPositions();
     void refreshTrackerOverlays();
+  }
+
+  function enabledOverlayCount(): number {
+    return [
+      settingsStore.settings.notificationOverlayEnabled,
+      settingsStore.settings.dropsTrackerEnabled,
+      settingsStore.settings.totalDropsTrackerEnabled,
+      settingsStore.settings.holyGrailOverlayEnabled,
+      settingsStore.settings.fateCardTrackerOverlayEnabled,
+      settingsStore.settings.materialTrackerOverlayEnabled,
+      settingsStore.settings.runeTrackerOverlayEnabled,
+      settingsStore.settings.achievementProgressOverlayEnabled,
+      settingsStore.settings.achievementSettings.overlayEnabled,
+      settingsStore.settings.monsterKillsOverlayEnabled,
+      settingsStore.settings.mulingIndicatorOverlayEnabled,
+    ].filter(Boolean).length;
+  }
+
+  function formatBool(value: boolean): string {
+    return value ? 'Yes' : 'No';
+  }
+
+  function formatRect(rect: GameWindowRect | null | undefined): string {
+    if (!rect) return '-';
+    return `${rect.left}, ${rect.top} | ${rect.width} x ${rect.height}`;
+  }
+
+  function diagnosticStatusClass(value: boolean): string {
+    return value ? 'ok' : 'warn';
+  }
+
+  function diagnosticWindowTitle(label: string): string {
+    const names: Record<string, string> = {
+      overlay: 'Main Transparent Overlay',
+      'notification-card-overlay': 'Notifications',
+      'drops-card-overlay': 'Drops Tracker',
+      'total-card-overlay': 'Total Drops',
+      'grail-card-overlay': 'Grail Progress',
+      'runes-card-overlay': 'Rune Tracker',
+      'mats-card-overlay': 'Mats Tracker',
+      'fate-cards-card-overlay': 'Fate Cards',
+      'achievement-card-overlay': 'Achievement Progress',
+      'achievement-popup-overlay': 'Achievement Popup',
+      'kills-card-overlay': 'Monster Kills',
+      'muling-card-overlay': 'Muling Indicator',
+    };
+    return names[label] ?? label;
+  }
+
+  async function runOverlayDiagnostics(repairFirst = false): Promise<void> {
+    if (diagnosticsBusy) return;
+    diagnosticsBusy = true;
+    diagnosticsMessage = '';
+    try {
+      if (repairFirst) {
+        await refreshTrackerOverlays();
+      }
+      diagnostics = await invoke<OverlayDiagnostics>('get_overlay_diagnostics');
+      diagnosticsMessage = `Diagnostics refreshed at ${new Date().toLocaleTimeString()}.`;
+    } catch (error) {
+      diagnosticsMessage = `Diagnostics failed: ${error}`;
+    } finally {
+      diagnosticsBusy = false;
+    }
+  }
+
+  async function testOverlayPulse(): Promise<void> {
+    diagnosticsMessage = '';
+    try {
+      await refreshTrackerOverlays();
+      await emit('overlay-test-notification', {});
+      diagnosticsMessage = settingsStore.settings.alwaysShowOverlays
+        ? 'Test overlay pulse sent. If nothing appears, run diagnostics and ask the player to try windowed/borderless mode.'
+        : 'Test overlay pulse sent. Always Show Overlays is off, so Diablo II may need to be foreground to see it.';
+      void runOverlayDiagnostics(false);
+    } catch (error) {
+      diagnosticsMessage = `Could not send test overlay pulse: ${error}`;
+    }
+  }
+
+  async function copyOverlayDiagnostics(): Promise<void> {
+    if (!diagnostics) {
+      await runOverlayDiagnostics(false);
+    }
+    if (!diagnostics) return;
+    const payload = {
+      capturedAt: new Date().toISOString(),
+      enabledOverlayCount: enabledOverlayCount(),
+      settings: {
+        alwaysShowOverlays: settingsStore.settings.alwaysShowOverlays,
+        trackerOverlaysSeparateWindow: settingsStore.settings.trackerOverlaysSeparateWindow,
+        notifications: settingsStore.settings.notificationOverlayEnabled,
+        dropsTracker: settingsStore.settings.dropsTrackerEnabled,
+        totalDrops: settingsStore.settings.totalDropsTrackerEnabled,
+        grailProgress: settingsStore.settings.holyGrailOverlayEnabled,
+        fateCards: settingsStore.settings.fateCardTrackerOverlayEnabled,
+        matsTracker: settingsStore.settings.materialTrackerOverlayEnabled,
+        runeTracker: settingsStore.settings.runeTrackerOverlayEnabled,
+        achievementProgress: settingsStore.settings.achievementProgressOverlayEnabled,
+        achievementPopup: settingsStore.settings.achievementSettings.overlayEnabled,
+        monsterKills: settingsStore.settings.monsterKillsOverlayEnabled,
+        mulingIndicator: settingsStore.settings.mulingIndicatorOverlayEnabled,
+      },
+      diagnostics,
+    };
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      diagnosticsMessage = 'Diagnostics copied to clipboard.';
+    } catch (error) {
+      diagnosticsMessage = `Could not copy diagnostics: ${error}`;
+    }
   }
 
   function setAlwaysShowOverlays(enabled: boolean): void {
@@ -367,6 +678,129 @@
 
       {#if overlayLayoutMessage}
         <p class="status-message">{overlayLayoutMessage}</p>
+      {/if}
+    </div>
+  {:else if activeOverlayTab === 'diagnostics'}
+    <div class="settings-section overlay-section">
+      <div class="section-heading">
+        <h2 class="section-title">Overlay Diagnostics</h2>
+        <p class="section-description">Use this when overlays are enabled but do not appear over Diablo II. The report is designed to be screenshotted or copied.</p>
+      </div>
+
+      <div class="diagnostics-actions">
+        <Button variant="primary" size="sm" disabled={diagnosticsBusy} onclick={() => runOverlayDiagnostics(false)}>
+          {diagnosticsBusy ? 'Checking...' : 'Run Diagnostics'}
+        </Button>
+        <Button variant="secondary" size="sm" disabled={diagnosticsBusy} onclick={() => runOverlayDiagnostics(true)}>Repair + Check</Button>
+        <Button variant="secondary" size="sm" onclick={testOverlayPulse}>Test Overlay</Button>
+        <Button variant="secondary" size="sm" onclick={resetOverlayLayout}>Reset Layout</Button>
+        <Button variant="secondary" size="sm" disabled={!diagnostics} onclick={copyOverlayDiagnostics}>Copy Report</Button>
+      </div>
+
+      {#if diagnosticsMessage}
+        <p class="status-message">{diagnosticsMessage}</p>
+      {/if}
+
+      <div class="diagnostics-note">
+        <strong>Fullscreen note</strong>
+        <span>True exclusive fullscreen can render Diablo II above transparent overlay windows even when Windows reports the overlay as visible and topmost. Windowed or borderless fullscreen is the safest test.</span>
+      </div>
+
+      <div class="diagnostic-grid">
+        <div class="diagnostic-card">
+          <h3>Configured Overlays</h3>
+          <strong>{enabledOverlayCount()}/11</strong>
+          <span>Enabled in settings</span>
+        </div>
+        <div class="diagnostic-card">
+          <h3>Always Show</h3>
+          <strong>{formatBool(settingsStore.settings.alwaysShowOverlays)}</strong>
+          <span>Needed when testing while this app is focused</span>
+        </div>
+        <div class="diagnostic-card">
+          <h3>Tracker Window</h3>
+          <strong>{formatBool(settingsStore.settings.trackerOverlaysSeparateWindow)}</strong>
+          <span>Separate scrollable tracker mode</span>
+        </div>
+      </div>
+
+      {#if diagnostics}
+        {#if diagnostics.warnings.length > 0}
+          <div class="diagnostics-warning-list">
+            {#each diagnostics.warnings as warning}
+              <p>{warning}</p>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="diagnostics-panel">
+          <div class="diagnostics-panel-heading">
+            <h3>Game Window</h3>
+            <span class="diag-pill {diagnosticStatusClass(diagnostics.game_found && diagnostics.game_alive)}">{diagnostics.game_found && diagnostics.game_alive ? 'Detected' : 'Problem'}</span>
+          </div>
+          <div class="diagnostics-facts">
+            <div><span>Found</span><strong>{formatBool(diagnostics.game_found)}</strong></div>
+            <div><span>Alive</span><strong>{formatBool(diagnostics.game_alive)}</strong></div>
+            <div><span>Foreground</span><strong>{formatBool(diagnostics.game_foreground)}</strong></div>
+            <div><span>Matches Monitor</span><strong>{formatBool(diagnostics.game_matches_monitor)}</strong></div>
+            <div><span>Game Rect</span><strong>{formatRect(diagnostics.game_rect)}</strong></div>
+            <div><span>Monitor Rect</span><strong>{formatRect(diagnostics.monitor_rect)}</strong></div>
+          </div>
+        </div>
+
+        <div class="diagnostics-panel">
+          <div class="diagnostics-panel-heading">
+            <h3>Main Overlay</h3>
+            <span class="diag-pill {diagnosticStatusClass(diagnostics.main_overlay.exists && diagnostics.main_overlay.visible && diagnostics.main_overlay.topmost)}">
+              {diagnostics.main_overlay.exists && diagnostics.main_overlay.visible && diagnostics.main_overlay.topmost ? 'Ready' : 'Check'}
+            </span>
+          </div>
+          <div class="diagnostics-facts">
+            <div><span>Exists</span><strong>{formatBool(diagnostics.main_overlay.exists)}</strong></div>
+            <div><span>Visible</span><strong>{formatBool(diagnostics.main_overlay.visible)}</strong></div>
+            <div><span>Topmost</span><strong>{formatBool(diagnostics.main_overlay.topmost)}</strong></div>
+            <div><span>Click Through</span><strong>{formatBool(diagnostics.main_overlay.click_through)}</strong></div>
+            <div><span>No Activate</span><strong>{formatBool(diagnostics.main_overlay.no_activate)}</strong></div>
+            <div><span>Layered</span><strong>{formatBool(diagnostics.main_overlay.layered)}</strong></div>
+            <div><span>Rect</span><strong>{formatRect(diagnostics.main_overlay.rect)}</strong></div>
+            <div><span>Error</span><strong>{diagnostics.main_overlay.error ?? '-'}</strong></div>
+          </div>
+        </div>
+
+        <div class="diagnostics-panel">
+          <div class="diagnostics-panel-heading">
+            <h3>Overlay Runtime</h3>
+            <span class="diag-pill {diagnosticStatusClass(diagnostics.overlay_styles_applied)}">{diagnostics.overlay_styles_applied ? 'Styled' : 'Waiting'}</span>
+          </div>
+          <div class="diagnostics-facts">
+            <div><span>Backend Always Show</span><strong>{formatBool(diagnostics.always_show_overlays)}</strong></div>
+            <div><span>Backend Click Through</span><strong>{formatBool(diagnostics.overlay_click_through)}</strong></div>
+            <div><span>Was Visible</span><strong>{formatBool(diagnostics.overlay_was_visible)}</strong></div>
+            <div><span>Styles Applied</span><strong>{formatBool(diagnostics.overlay_styles_applied)}</strong></div>
+          </div>
+        </div>
+
+        <div class="diagnostics-panel">
+          <div class="diagnostics-panel-heading">
+            <h3>Edit Windows</h3>
+            <span class="diag-pill ok">{diagnostics.editor_windows.filter((entry) => entry.exists).length}/{diagnostics.editor_windows.length}</span>
+          </div>
+          <div class="diagnostic-window-list">
+            {#each diagnostics.editor_windows as entry}
+              <div class="diagnostic-window-row">
+                <strong>{diagnosticWindowTitle(entry.label)}</strong>
+                <span>{entry.visible ? 'Visible' : 'Hidden'}</span>
+                <span>{entry.topmost ? 'Topmost' : 'Not topmost'}</span>
+                <span>{formatRect(entry.rect)}</span>
+                <em>{entry.error ?? ''}</em>
+              </div>
+            {/each}
+          </div>
+        </div>
+      {:else}
+        <div class="diagnostics-empty">
+          <p>Run diagnostics with Diablo II open. If the player uses fullscreen, have them test once in windowed or borderless mode too.</p>
+        </div>
       {/if}
     </div>
   {:else if activeOverlayTab === 'notifications'}
@@ -1097,6 +1531,183 @@
     font-size: var(--text-sm);
   }
 
+  .diagnostics-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .diagnostics-note,
+  .diagnostics-empty {
+    display: grid;
+    gap: 4px;
+    padding: var(--space-3);
+    border: 1px solid var(--border-primary);
+    background: color-mix(in srgb, var(--accent-primary) 9%, var(--bg-secondary));
+    color: var(--text-secondary);
+  }
+
+  .diagnostics-note strong {
+    color: var(--accent-primary);
+  }
+
+  .diagnostics-note span,
+  .diagnostics-empty p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    line-height: 1.45;
+  }
+
+  .diagnostic-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--space-3);
+  }
+
+  .diagnostic-card,
+  .diagnostics-panel {
+    border: 1px solid var(--border-primary);
+    background: color-mix(in srgb, var(--bg-secondary) 84%, #000 16%);
+  }
+
+  .diagnostic-card {
+    display: grid;
+    gap: 6px;
+    padding: var(--space-3);
+  }
+
+  .diagnostic-card h3,
+  .diagnostics-panel h3 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--text-base);
+  }
+
+  .diagnostic-card strong {
+    color: var(--accent-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-xl);
+  }
+
+  .diagnostic-card span {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+  }
+
+  .diagnostics-warning-list {
+    display: grid;
+    gap: var(--space-2);
+  }
+
+  .diagnostics-warning-list p {
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--status-warning-text) 55%, var(--border-primary));
+    background: color-mix(in srgb, var(--status-warning-text) 12%, var(--bg-primary));
+    color: var(--status-warning-text);
+    font-size: var(--text-sm);
+    line-height: 1.4;
+  }
+
+  .diagnostics-panel {
+    display: grid;
+    gap: var(--space-3);
+    padding: var(--space-3);
+  }
+
+  .diagnostics-panel-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  .diag-pill {
+    min-width: 72px;
+    padding: 4px 8px;
+    border: 1px solid var(--border-secondary);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    text-align: center;
+    text-transform: uppercase;
+  }
+
+  .diag-pill.ok {
+    border-color: color-mix(in srgb, var(--status-success-text) 70%, var(--border-primary));
+    color: var(--status-success-text);
+  }
+
+  .diag-pill.warn {
+    border-color: color-mix(in srgb, var(--status-warning-text) 70%, var(--border-primary));
+    color: var(--status-warning-text);
+  }
+
+  .diagnostics-facts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 8px;
+  }
+
+  .diagnostics-facts div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+    padding: 9px 10px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-primary);
+  }
+
+  .diagnostics-facts span {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+  }
+
+  .diagnostics-facts strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .diagnostic-window-list {
+    display: grid;
+    gap: 6px;
+    max-height: 320px;
+    overflow: auto;
+    padding-right: 4px;
+  }
+
+  .diagnostic-window-row {
+    display: grid;
+    grid-template-columns: minmax(150px, 1.1fr) 76px 92px minmax(140px, 1fr) minmax(0, 1fr);
+    gap: var(--space-2);
+    align-items: center;
+    padding: 8px 10px;
+    border: 1px solid var(--border-secondary);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+  }
+
+  .diagnostic-window-row strong {
+    color: var(--text-primary);
+  }
+
+  .diagnostic-window-row em {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--status-warning-text);
+    font-style: normal;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   @media (max-width: 760px) {
     .overlay-hero,
     .setting-row,
@@ -1114,6 +1725,10 @@
     .range-control {
       min-width: 0;
       width: 100%;
+    }
+
+    .diagnostic-window-row {
+      grid-template-columns: 1fr;
     }
   }
 </style>

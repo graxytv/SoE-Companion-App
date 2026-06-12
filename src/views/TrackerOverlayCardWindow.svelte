@@ -792,8 +792,8 @@
     height: 100vh;
     box-sizing: border-box;
     overflow: hidden;
-    background: transparent !important;
-    border: 1px solid transparent !important;
+    background: var(--overlay-panel-bg, rgba(10, 10, 16, 0.82));
+    border: 1px solid var(--overlay-panel-border, rgba(201, 168, 93, 0.58));
     border-radius: 6px;
     padding: 6px 10px 8px;
     font-family: var(--font-mono, monospace);
@@ -806,7 +806,7 @@
   }
 
   .tracker-card > :not(.resize-grip) {
-    opacity: 0 !important;
+    opacity: 1;
   }
 
   .tracker-card.disabled {
@@ -823,14 +823,16 @@
     height: 18px;
     border: 0;
     border-radius: 3px;
-    background: transparent;
+    background:
+      linear-gradient(135deg, transparent 0 42%, var(--accent-primary, #f6c33d) 44% 52%, transparent 54% 100%),
+      linear-gradient(135deg, transparent 0 62%, var(--accent-primary, #f6c33d) 64% 72%, transparent 74% 100%);
     cursor: nwse-resize;
-    opacity: 0;
+    opacity: 0.85;
     touch-action: none;
   }
 
   .resize-grip:hover {
-    background: transparent;
+    opacity: 1;
   }
 
   .notification-preview {

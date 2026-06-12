@@ -148,6 +148,7 @@ static const uintptr_t SET_NAME_ID     = 0x24;   // word (wStringId)
 // D2Lang GetStringById: ordinal 10003, RVA 0x9450 (confirmed same in SoE D2Lang)
 static const uintptr_t D2LANG_GETSTRING_RVA = 0x9450;
 static const uintptr_t D2CLIENT_PLAYER_UNIT_RVA = 0x11BBFC;
+static const uintptr_t D2CLIENT_GET_ITEM_NAME_RVA = 0x914F0;
 
 // Sentinel NAME_ID that means "lookup failed at DLL load"
 static const uint16_t BAD_NAME_ID = 5383;
@@ -181,10 +182,19 @@ static uint32_t ItemCodeForUnit(uintptr_t pUnit)
     return *(uint32_t*)(record + ITEMS_TXT_CODE);
 }
 
+static bool IsCharmItem(uintptr_t pUnit)
+{
+    uint32_t code = ItemCodeForUnit(pUnit);
+    // Item codes are little-endian dwords: "cm1", "cm2", "cm3", "cm4".
+    return code == 0x00316D63 ||
+           code == 0x00326D63 ||
+           code == 0x00336D63 ||
+           code == 0x00346D63;
+}
+
 static bool IsConfiguredCharm(uintptr_t pUnit)
 {
     uint32_t code = ItemCodeForUnit(pUnit);
-    // Item codes are little-endian dwords: "cm1", "cm2", "cm3".
     if (code == 0x00316D63) return g_dropIdSmallCharm;
     if (code == 0x00326D63) return g_dropIdLargeCharm;
     if (code == 0x00336D63) return g_dropIdGrandCharm;
@@ -7599,6 +7609,27 @@ static bool TryResolveUniqueSetItemName(uintptr_t pUnit, uint32_t quality, char*
     return outName[0] != '\0';
 }
 
+static bool TryResolveItemDisplayName(uintptr_t pUnit, char* outName, size_t outNameSize)
+{
+    if (outName && outNameSize > 0) outName[0] = '\0';
+    if (!outName || outNameSize == 0) return false;
+
+    HMODULE hD2Client = GetModuleHandleA("D2Client.dll");
+    if (!hD2Client) return false;
+
+    typedef void (__stdcall *FnGetItemName)(uintptr_t, wchar_t*, uint32_t);
+    FnGetItemName getItemName = (FnGetItemName)((uint8_t*)hD2Client + D2CLIENT_GET_ITEM_NAME_RVA);
+    if (!getItemName) return false;
+
+    wchar_t wideName[256] = {};
+    getItemName(pUnit, wideName, 256);
+    if (!wideName[0]) return false;
+
+    WideCharToMultiByte(CP_ACP, 0, wideName, -1, outName, (int)outNameSize - 1, nullptr, nullptr);
+    outName[outNameSize - 1] = '\0';
+    return outName[0] != '\0';
+}
+
 static void FlushHookDropEventLines(std::vector<std::string>& lines)
 {
     if (lines.empty()) return;
@@ -7659,7 +7690,7 @@ static void QueueHookDropEventLine(const char* line)
     if (g_hookDropEventReady) SetEvent(g_hookDropEventReady);
 }
 
-static void AppendHookDropEvent(uintptr_t pUnit, uint32_t quality, uint32_t flags)
+static void AppendHookDropEvent(uintptr_t pUnit, uint32_t quality, uint32_t flags, const char* eventKind, bool forceRuneword)
 {
     if (IsBadReadPtr((void*)pUnit, UNIT_ITEMDATA + 4)) return;
     uintptr_t pItemData = *(uintptr_t*)(pUnit + UNIT_ITEMDATA);
@@ -7678,8 +7709,12 @@ static void AppendHookDropEvent(uintptr_t pUnit, uint32_t quality, uint32_t flag
     ItemCodeToString(ItemCodeForUnit(pUnit), itemCode, sizeof(itemCode));
     char canonical[256] = {};
     TryResolveUniqueSetItemName(pUnit, quality, canonical, sizeof(canonical));
+    if (forceRuneword) {
+        TryResolveItemDisplayName(pUnit, canonical, sizeof(canonical));
+    }
 
     const char* displayName = canonical[0] ? canonical : (itemCode[0] ? itemCode : "Unknown item");
+    const char* qualityLabel = forceRuneword ? "Runeword" : QualityString(quality);
     char nameEsc[512] = {};
     char canonicalEsc[512] = {};
     char codeEsc[32] = {};
@@ -7689,17 +7724,17 @@ static void AppendHookDropEvent(uintptr_t pUnit, uint32_t quality, uint32_t flag
 
     char line[1400] = {};
     snprintf(line, sizeof(line),
-        "{\"eventId\":\"ijl11:%08X:%08X:%s:%u:%u\","
+        "{\"eventId\":\"ijl11:%s:%08X:%08X:%s:%u:%u\","
         "\"unitId\":%u,\"seed\":%u,\"itemCode\":\"%s\","
         "\"quality\":\"%s\",\"name\":\"%s\",\"baseName\":\"%s\","
         "\"canonicalName\":\"%s\",\"mode\":%u,\"isIdentified\":%s,"
         "\"isRuneword\":%s,\"isEthereal\":%s,\"fileIndex\":%u,"
         "\"class\":%u,\"source\":\"ijl11-drop-hook\",\"nameSource\":\"item-code\"}\n",
-        seed, unitId, codeEsc, quality, fileIdx,
+        eventKind ? eventKind : "drop", seed, unitId, codeEsc, quality, fileIdx,
         unitId, seed, codeEsc,
-        QualityString(quality), nameEsc, codeEsc,
+        qualityLabel, nameEsc, codeEsc,
         canonicalEsc, mode, (flags & IFLAG_IDENTIFIED) ? "true" : "false",
-        (flags & IFLAG_RUNEWORD) ? "true" : "false",
+        (forceRuneword || (flags & IFLAG_RUNEWORD)) ? "true" : "false",
         (flags & IFLAG_ETHEREAL) ? "true" : "false",
         fileIdx, itemClass);
 
@@ -7772,10 +7807,17 @@ static void __stdcall HookSetItemFlag(uintptr_t pUnit, uint32_t flagMask, int en
     // Grail log: only log when the initial creation flag is being set
     // (flagMask 0x80000 = the "item created" flag that fires exactly once)
     if (flagMask == 0x80000) {
-        AppendHookDropEvent(pUnit, quality, flags);
+        const bool isRareOrMagic = quality == QUALITY_RARE || quality == QUALITY_MAGIC;
+        if (!isRareOrMagic || IsCharmItem(pUnit)) {
+            AppendHookDropEvent(pUnit, quality, flags, "drop", false);
+        }
         if (quality == QUALITY_UNIQUE || quality == QUALITY_SET) {
             TryLogItemName(pUnit, quality);
         }
+    }
+
+    if (flagMask == IFLAG_RUNEWORD && (flags & IFLAG_RUNEWORD)) {
+        AppendHookDropEvent(pUnit, quality, flags, "runeword", true);
     }
 }
 

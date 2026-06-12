@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Runtime, WindowEvent};
 
 use crate::hotkeys::{EditModeState, HotkeyState, MulingModeHotkeyState};
 use crate::logger::{error as log_error, info as log_info};
@@ -51,6 +51,10 @@ use windows::Win32::Foundation::{CloseHandle, BOOL, COLORREF, HANDLE, HWND, RECT
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR};
 #[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
+#[cfg(target_os = "windows")]
 use windows::Win32::Security::{
     AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, TokenElevationType,
     TokenLinkedToken, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME, SE_PRIVILEGE_ENABLED,
@@ -68,12 +72,14 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetForegroundWindow, GetWindowLongW, GetWindowRect, MoveWindow,
+    FindWindowW, GetForegroundWindow, GetWindowLongW, GetWindowRect,
+    GetWindowThreadProcessId, IsHungAppWindow, IsWindowVisible, MoveWindow,
     SetLayeredWindowAttributes, SetWindowLongW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
     HWND_TOPMOST, LWA_ALPHA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WS_BORDER, WS_CAPTION, WS_DLGFRAME, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
-    WS_POPUP, WS_SYSMENU, WS_THICKFRAME, GetWindowThreadProcessId, IsHungAppWindow,
+    SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WS_BORDER,
+    WS_CAPTION, WS_DLGFRAME, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+    WS_THICKFRAME,
 };
 
 /// Shared state for controlling the scanner
@@ -86,10 +92,6 @@ struct AppState {
     filter_enabled: Arc<AtomicBool>,
     /// When true, scanner logs per-item filter decisions (noisy; opt-in for debugging).
     verbose_filter_logging: Arc<AtomicBool>,
-    /// Optional low-impact sync trigger. It reads only tiny gameplay-state
-    /// pointers and asks the frontend to run the normal quiet sync once after
-    /// a transition settles.
-    zone_transition_sync_enabled: Arc<AtomicBool>,
     /// Driven by the reveal-hidden hotkey watcher; mirrored into the hook.
     reveal_hidden_active: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
@@ -100,8 +102,7 @@ struct AppState {
     /// Session loot history shared with scanner thread.
     loot_history: Arc<RwLock<LootHistory>>,
     /// Quiet in-memory drop queue. The silent collector fills this while
-    /// playing; Save & Exit, zone-change sync, or Sync All drains it in one
-    /// frontend batch.
+    /// playing; Save & Exit or Sync All drains it in one frontend batch.
     silent_drop_queue: Arc<Mutex<Vec<ItemDropEvent>>>,
     grail_log_watcher: grail_log::GrailLogWatcher,
     account_stats_watcher: kill_counter::AccountStatsWatcher,
@@ -166,213 +167,12 @@ fn is_diablo2_running() -> bool {
     let Ok(hwnd) = hwnd else {
         return false;
     };
-    if hwnd.0.is_null() {
-        return false;
-    }
-    is_diablo2_window_alive(hwnd)
+    !hwnd.0.is_null()
 }
 
 #[cfg(not(target_os = "windows"))]
 fn is_diablo2_running() -> bool {
     false
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ZoneSignature {
-    player_unit: u32,
-    automap_layer: u32,
-}
-
-#[cfg(target_os = "windows")]
-fn read_zone_signature(
-    ctx: &crate::process::D2Context,
-) -> Result<Option<ZoneSignature>, String> {
-    let player_unit = ctx
-        .process
-        .read_memory::<u32>(ctx.d2_client + crate::offsets::d2client::PLAYER_UNIT)?;
-    let automap_layer = ctx
-        .process
-        .read_memory::<u32>(ctx.d2_client + crate::offsets::d2client::AUTOMAP_LAYER)?;
-
-    if player_unit == 0 || automap_layer == 0 {
-        return Ok(None);
-    }
-
-    Ok(Some(ZoneSignature {
-        player_unit,
-        automap_layer,
-    }))
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ZoneTransitionPayload<'a> {
-    reason: &'a str,
-    player_unit: u32,
-    automap_layer: u32,
-}
-
-#[cfg(target_os = "windows")]
-fn emit_zone_transition_sync(
-    app_handle: &AppHandle,
-    reason: &'static str,
-    signature: ZoneSignature,
-    last_emit: &mut Option<Instant>,
-    cooldown: Duration,
-) {
-    let now = Instant::now();
-    if last_emit
-        .map(|last| now.duration_since(last) < cooldown)
-        .unwrap_or(false)
-    {
-        return;
-    }
-
-    *last_emit = Some(now);
-    let payload = ZoneTransitionPayload {
-        reason,
-        player_unit: signature.player_unit,
-        automap_layer: signature.automap_layer,
-    };
-    if let Err(e) = app_handle.emit("zone-transition-sync-requested", payload) {
-        log_error(&format!(
-            "Failed to emit zone-transition-sync-requested: {}",
-            e
-        ));
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn spawn_zone_transition_watcher(
-    should_run: Arc<AtomicBool>,
-    enabled: Arc<AtomicBool>,
-    app_handle: AppHandle,
-) {
-    thread::Builder::new()
-        .name("zone-transition-watcher".into())
-        .spawn(move || {
-            const POLL_INTERVAL: Duration = Duration::from_millis(750);
-            const STABLE_CONFIRM: Duration = Duration::from_millis(1500);
-            const EMIT_COOLDOWN: Duration = Duration::from_secs(15);
-
-            let mut ctx: Option<crate::process::D2Context> = None;
-            let mut last_stable: Option<ZoneSignature> = None;
-            let mut transition_pending = false;
-            let mut candidate_changed: Option<(ZoneSignature, Instant)> = None;
-            let mut last_emit: Option<Instant> = None;
-
-            while should_run.load(Ordering::SeqCst) {
-                thread::sleep(POLL_INTERVAL);
-
-                if !enabled.load(Ordering::SeqCst) {
-                    ctx = None;
-                    last_stable = None;
-                    transition_pending = false;
-                    candidate_changed = None;
-                    continue;
-                }
-
-                if !is_diablo2_running() {
-                    ctx = None;
-                    last_stable = None;
-                    transition_pending = false;
-                    candidate_changed = None;
-                    continue;
-                }
-
-                if ctx.is_none() {
-                    match crate::process::D2Context::new() {
-                        Ok(next) => ctx = Some(next),
-                        Err(_) => continue,
-                    }
-                }
-
-                let signature = match ctx.as_ref().map(read_zone_signature) {
-                    Some(Ok(value)) => value,
-                    Some(Err(_)) => {
-                        ctx = None;
-                        last_stable = None;
-                        transition_pending = false;
-                        candidate_changed = None;
-                        continue;
-                    }
-                    None => continue,
-                };
-
-                let now = Instant::now();
-                match signature {
-                    None => {
-                        if last_stable.is_some() {
-                            transition_pending = true;
-                        }
-                        candidate_changed = None;
-                    }
-                    Some(current) => {
-                        let Some(previous) = last_stable else {
-                            last_stable = Some(current);
-                            transition_pending = false;
-                            candidate_changed = None;
-                            continue;
-                        };
-
-                        if transition_pending {
-                            emit_zone_transition_sync(
-                                &app_handle,
-                                "loading-stable",
-                                current,
-                                &mut last_emit,
-                                EMIT_COOLDOWN,
-                            );
-                            last_stable = Some(current);
-                            transition_pending = false;
-                            candidate_changed = None;
-                            continue;
-                        }
-
-                        if current == previous {
-                            candidate_changed = None;
-                            continue;
-                        }
-
-                        match candidate_changed {
-                            Some((candidate, since))
-                                if candidate == current
-                                    && now.duration_since(since) >= STABLE_CONFIRM =>
-                            {
-                                emit_zone_transition_sync(
-                                    &app_handle,
-                                    "area-signature-changed",
-                                    current,
-                                    &mut last_emit,
-                                    EMIT_COOLDOWN,
-                                );
-                                last_stable = Some(current);
-                                candidate_changed = None;
-                            }
-                            Some((candidate, _)) if candidate == current => {}
-                            _ => {
-                                candidate_changed = Some((current, now));
-                            }
-                        }
-                    }
-                }
-            }
-        })
-        .map_err(|e| {
-            log_error(&format!("Failed to spawn zone-transition watcher: {}", e));
-            e
-        })
-        .ok();
-}
-
-#[cfg(not(target_os = "windows"))]
-fn spawn_zone_transition_watcher(
-    _should_run: Arc<AtomicBool>,
-    _enabled: Arc<AtomicBool>,
-    _app_handle: AppHandle,
-) {
 }
 
 /// Spawn the marker-scanner thread. Cancellation is checked at the top of
@@ -1134,13 +934,6 @@ fn set_verbose_filter_logging(enabled: bool, state: tauri::State<AppState>) {
         .store(enabled, Ordering::SeqCst);
 }
 
-#[tauri::command]
-fn set_zone_transition_sync_enabled(enabled: bool, state: tauri::State<AppState>) {
-    state
-        .zone_transition_sync_enabled
-        .store(enabled, Ordering::SeqCst);
-}
-
 // ===== DSL Parser Commands =====
 
 /// Parse DSL text into FilterConfig JSON
@@ -1340,12 +1133,44 @@ fn set_muling_banner_window_visible(app: AppHandle, visible: bool) -> Result<(),
     Ok(())
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 struct GameWindowRect {
     left: i32,
     top: i32,
     width: i32,
     height: i32,
+}
+
+#[derive(serde::Serialize)]
+struct OverlayWindowDiagnostic {
+    label: String,
+    exists: bool,
+    visible: bool,
+    topmost: bool,
+    click_through: bool,
+    no_activate: bool,
+    tool_window: bool,
+    layered: bool,
+    rect: Option<GameWindowRect>,
+    error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct OverlayDiagnostics {
+    game_found: bool,
+    game_alive: bool,
+    game_foreground: bool,
+    game_rect: Option<GameWindowRect>,
+    monitor_rect: Option<GameWindowRect>,
+    game_matches_monitor: bool,
+    always_show_overlays: bool,
+    overlay_click_through: bool,
+    overlay_was_visible: bool,
+    overlay_styles_applied: bool,
+    main_overlay: OverlayWindowDiagnostic,
+    editor_windows: Vec<OverlayWindowDiagnostic>,
+    warnings: Vec<String>,
+    error: Option<String>,
 }
 
 #[cfg(target_os = "windows")]
@@ -1387,6 +1212,262 @@ fn get_game_window_rect() -> Result<GameWindowRect, String> {
     #[cfg(not(target_os = "windows"))]
     {
         Err("Game window positioning is only supported on Windows".to_string())
+    }
+}
+
+fn empty_overlay_window_diagnostic(label: &str, error: Option<String>) -> OverlayWindowDiagnostic {
+    OverlayWindowDiagnostic {
+        label: label.to_string(),
+        exists: false,
+        visible: false,
+        topmost: false,
+        click_through: false,
+        no_activate: false,
+        tool_window: false,
+        layered: false,
+        rect: None,
+        error,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn overlay_window_diagnostic(app: &AppHandle, label: &str) -> OverlayWindowDiagnostic {
+    let Some(window) = app.get_webview_window(label) else {
+        return empty_overlay_window_diagnostic(label, Some("Tauri window not found".to_string()));
+    };
+
+    let hwnd = match window.hwnd() {
+        Ok(hwnd) => HWND(hwnd.0 as *mut std::ffi::c_void),
+        Err(error) => {
+            return OverlayWindowDiagnostic {
+                label: label.to_string(),
+                exists: true,
+                visible: false,
+                topmost: false,
+                click_through: false,
+                no_activate: false,
+                tool_window: false,
+                layered: false,
+                rect: None,
+                error: Some(format!("Could not read HWND: {}", error)),
+            };
+        }
+    };
+
+    if hwnd.0.is_null() {
+        return OverlayWindowDiagnostic {
+            label: label.to_string(),
+            exists: true,
+            visible: false,
+            topmost: false,
+            click_through: false,
+            no_activate: false,
+            tool_window: false,
+            layered: false,
+            rect: None,
+            error: Some("HWND is null".to_string()),
+        };
+    }
+
+    let mut rect = RECT::default();
+    let rect_error = unsafe { GetWindowRect(hwnd, &mut rect) }
+        .err()
+        .map(|error| format!("GetWindowRect failed: {}", error));
+    let rect_payload = if rect_error.is_none() {
+        Some(GameWindowRect {
+            left: rect.left,
+            top: rect.top,
+            width: rect.right - rect.left,
+            height: rect.bottom - rect.top,
+        })
+    } else {
+        None
+    };
+    let ex_style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) };
+
+    OverlayWindowDiagnostic {
+        label: label.to_string(),
+        exists: true,
+        visible: unsafe { IsWindowVisible(hwnd).as_bool() },
+        topmost: ex_style & WS_EX_TOPMOST.0 as i32 != 0,
+        click_through: ex_style & WS_EX_TRANSPARENT.0 as i32 != 0,
+        no_activate: ex_style & WS_EX_NOACTIVATE.0 as i32 != 0,
+        tool_window: ex_style & WS_EX_TOOLWINDOW.0 as i32 != 0,
+        layered: ex_style & WS_EX_LAYERED.0 as i32 != 0,
+        rect: rect_payload,
+        error: rect_error,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn monitor_rect_for_window(hwnd: HWND) -> Option<GameWindowRect> {
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if monitor.0.is_null() {
+        return None;
+    }
+
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut info).as_bool() } {
+        return None;
+    }
+
+    Some(GameWindowRect {
+        left: info.rcMonitor.left,
+        top: info.rcMonitor.top,
+        width: info.rcMonitor.right - info.rcMonitor.left,
+        height: info.rcMonitor.bottom - info.rcMonitor.top,
+    })
+}
+
+fn rects_nearly_match(a: &GameWindowRect, b: &GameWindowRect) -> bool {
+    const TOLERANCE: i32 = 2;
+    (a.left - b.left).abs() <= TOLERANCE
+        && (a.top - b.top).abs() <= TOLERANCE
+        && (a.width - b.width).abs() <= TOLERANCE
+        && (a.height - b.height).abs() <= TOLERANCE
+}
+
+#[tauri::command]
+fn get_overlay_diagnostics(app: AppHandle) -> OverlayDiagnostics {
+    #[cfg(target_os = "windows")]
+    {
+        let editor_labels = [
+            "notification-card-overlay",
+            "drops-card-overlay",
+            "total-card-overlay",
+            "grail-card-overlay",
+            "runes-card-overlay",
+            "mats-card-overlay",
+            "fate-cards-card-overlay",
+            "achievement-card-overlay",
+            "achievement-popup-overlay",
+            "kills-card-overlay",
+            "muling-card-overlay",
+        ];
+
+        let class_wide: Vec<u16> = OsStr::new("Diablo II")
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let hwnd_game = match unsafe { FindWindowW(PCWSTR(class_wide.as_ptr()), PCWSTR::null()) } {
+            Ok(hwnd) => hwnd,
+            Err(error) => {
+                return OverlayDiagnostics {
+                    game_found: false,
+                    game_alive: false,
+                    game_foreground: false,
+                    game_rect: None,
+                    monitor_rect: None,
+                    game_matches_monitor: false,
+                    always_show_overlays: OVERLAY_ALWAYS_VISIBLE.load(Ordering::SeqCst),
+                    overlay_click_through: OVERLAY_CLICK_THROUGH.load(Ordering::SeqCst),
+                    overlay_was_visible: OVERLAY_WAS_VISIBLE.load(Ordering::SeqCst),
+                    overlay_styles_applied: OVERLAY_STYLES_APPLIED.load(Ordering::SeqCst),
+                    main_overlay: overlay_window_diagnostic(&app, "overlay"),
+                    editor_windows: editor_labels
+                        .iter()
+                        .map(|label| overlay_window_diagnostic(&app, label))
+                        .collect(),
+                    warnings: vec!["Diablo II was not found. Start Diablo II before testing overlays.".to_string()],
+                    error: Some(format!("FindWindow failed: {}", error)),
+                };
+            }
+        };
+
+        let game_found = !hwnd_game.0.is_null();
+        let game_alive = game_found && is_diablo2_window_alive(hwnd_game);
+        let game_foreground = game_found && unsafe { GetForegroundWindow().0 == hwnd_game.0 };
+        let game_rect = if game_found {
+            let mut rect = RECT::default();
+            unsafe { GetWindowRect(hwnd_game, &mut rect) }.ok().map(|_| GameWindowRect {
+                left: rect.left,
+                top: rect.top,
+                width: rect.right - rect.left,
+                height: rect.bottom - rect.top,
+            })
+        } else {
+            None
+        };
+        let monitor_rect = if game_found {
+            monitor_rect_for_window(hwnd_game)
+        } else {
+            None
+        };
+        let game_matches_monitor = game_rect
+            .as_ref()
+            .zip(monitor_rect.as_ref())
+            .is_some_and(|(game, monitor)| rects_nearly_match(game, monitor));
+        let main_overlay = overlay_window_diagnostic(&app, "overlay");
+        let always_show_overlays = OVERLAY_ALWAYS_VISIBLE.load(Ordering::SeqCst);
+        let mut warnings = Vec::new();
+
+        if !game_found {
+            warnings.push("Diablo II was not found. Start Diablo II before testing overlays.".to_string());
+        } else if !game_alive {
+            warnings.push("Diablo II was found, but Windows reports it is hung or exited.".to_string());
+        }
+        if game_found && !game_foreground && !always_show_overlays {
+            warnings.push("Diablo II is not foreground and Always Show Overlays is off, so the main overlay will hide while this app is focused.".to_string());
+        }
+        if game_matches_monitor {
+            warnings.push("The Diablo II window matches the monitor bounds. If this is exclusive fullscreen, Windows can render the game above transparent overlay windows.".to_string());
+        }
+        if main_overlay.exists && !main_overlay.visible && (game_foreground || always_show_overlays) {
+            warnings.push("The main overlay window exists but Windows reports it is hidden. Try Refresh Overlays or Edit Layout.".to_string());
+        }
+        if main_overlay.exists && !main_overlay.topmost {
+            warnings.push("The main overlay window is not topmost. Another fullscreen or overlay app may be taking priority.".to_string());
+        }
+        if main_overlay.exists && !main_overlay.layered {
+            warnings.push("The main overlay is missing the layered-window style required for transparency.".to_string());
+        }
+        if main_overlay.exists && main_overlay.error.is_some() {
+            warnings.push("The main overlay exists, but Windows returned an error while reading its window state.".to_string());
+        }
+
+        OverlayDiagnostics {
+            game_found,
+            game_alive,
+            game_foreground,
+            game_rect,
+            monitor_rect,
+            game_matches_monitor,
+            always_show_overlays,
+            overlay_click_through: OVERLAY_CLICK_THROUGH.load(Ordering::SeqCst),
+            overlay_was_visible: OVERLAY_WAS_VISIBLE.load(Ordering::SeqCst),
+            overlay_styles_applied: OVERLAY_STYLES_APPLIED.load(Ordering::SeqCst),
+            main_overlay,
+            editor_windows: editor_labels
+                .iter()
+                .map(|label| overlay_window_diagnostic(&app, label))
+                .collect(),
+            warnings,
+            error: None,
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        OverlayDiagnostics {
+            game_found: false,
+            game_alive: false,
+            game_foreground: false,
+            game_rect: None,
+            monitor_rect: None,
+            game_matches_monitor: false,
+            always_show_overlays: false,
+            overlay_click_through: true,
+            overlay_was_visible: false,
+            overlay_styles_applied: false,
+            main_overlay: empty_overlay_window_diagnostic("overlay", None),
+            editor_windows: Vec::new(),
+            warnings: vec!["Overlay diagnostics are only available on Windows.".to_string()],
+            error: Some("Overlay diagnostics are only available on Windows.".to_string()),
+        }
     }
 }
 
@@ -1441,35 +1522,31 @@ fn logical_to_physical_i32(value: f64, scale_factor: f64) -> i32 {
 }
 
 #[cfg(target_os = "windows")]
-fn overlay_editor_window_title(label: &str) -> Option<&'static str> {
-    match label {
-        "notification-card-overlay" => Some("SoE Companion Notifications Overlay"),
-        "drops-card-overlay" => Some("SoE Companion Drops Overlay"),
-        "total-card-overlay" => Some("SoE Companion Total Drops Overlay"),
-        "grail-card-overlay" => Some("SoE Companion Grail Overlay"),
-        "runes-card-overlay" => Some("SoE Companion Rune Overlay"),
-        "mats-card-overlay" => Some("SoE Companion Mats Overlay"),
-        "fate-cards-card-overlay" => Some("SoE Companion Fate Cards Overlay"),
-        "achievement-card-overlay" => Some("SoE Companion Achievement Overlay"),
-        "achievement-popup-overlay" => Some("SoE Companion Achievement Popup Overlay"),
-        "kills-card-overlay" => Some("SoE Companion Monster Kills Overlay"),
-        "muling-card-overlay" => Some("SoE Companion Muling Indicator Overlay"),
-        _ => None,
+fn overlay_editor_hwnd<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    label: &str,
+) -> Result<HWND, String> {
+    editor_window_size(label)
+        .ok_or_else(|| format!("Unsupported overlay editor window '{}'", label))?;
+    let hwnd = window
+        .hwnd()
+        .map_err(|e| format!("Failed to get overlay editor HWND '{}': {}", label, e))?;
+    let raw_hwnd = hwnd.0 as *mut std::ffi::c_void;
+
+    if raw_hwnd.is_null() {
+        return Err(format!("Overlay editor HWND '{}' is null", label));
     }
+
+    Ok(HWND(raw_hwnd))
 }
 
 #[cfg(target_os = "windows")]
-fn apply_overlay_editor_window_style(label: &str, click_through: bool) -> Result<(), String> {
-    let title = overlay_editor_window_title(label)
-        .ok_or_else(|| format!("Unsupported overlay editor window '{}'", label))?;
-    let title_wide: Vec<u16> = OsStr::new(title).encode_wide().chain(Some(0)).collect();
-
-    let hwnd = unsafe { FindWindowW(PCWSTR::null(), PCWSTR(title_wide.as_ptr())) }
-        .map_err(|_| format!("Overlay editor OS window '{}' not found", title))?;
-
-    if hwnd.0.is_null() {
-        return Err(format!("Overlay editor HWND '{}' is null", title));
-    }
+fn apply_overlay_editor_window_style<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    label: &str,
+    click_through: bool,
+) -> Result<(), String> {
+    let hwnd = overlay_editor_hwnd(window, label)?;
 
     unsafe {
         let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
@@ -1497,7 +1574,7 @@ fn apply_overlay_editor_window_style(label: &str, click_through: bool) -> Result
             SetWindowLongW(hwnd, GWL_STYLE, new_style);
         }
 
-        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 1, LWA_ALPHA);
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA);
 
         let _ = SetWindowPos(
             hwnd,
@@ -1577,7 +1654,7 @@ fn set_overlay_editor_window_visible(
 
         let _ = window.set_size(PhysicalSize::new(physical_width, physical_height));
         let _ = window.set_position(PhysicalPosition::new(screen_x, screen_y));
-        let _ = apply_overlay_editor_window_style(&label, false);
+        let _ = apply_overlay_editor_window_style(&window, &label, false);
     }
 
     window
@@ -1585,7 +1662,7 @@ fn set_overlay_editor_window_visible(
         .map_err(|e| format!("Failed to show overlay editor window '{}': {}", label, e))?;
     #[cfg(target_os = "windows")]
     {
-        let _ = apply_overlay_editor_window_style(&label, false);
+        let _ = apply_overlay_editor_window_style(&window, &label, false);
     }
     Ok(())
 }
@@ -1603,16 +1680,7 @@ fn move_overlay_editor_window(
 
     #[cfg(target_os = "windows")]
     {
-        let title = overlay_editor_window_title(&label)
-            .ok_or_else(|| format!("Unsupported overlay editor window '{}'", label))?;
-        let title_wide: Vec<u16> = OsStr::new(title).encode_wide().chain(Some(0)).collect();
-
-        let hwnd = unsafe { FindWindowW(PCWSTR::null(), PCWSTR(title_wide.as_ptr())) }
-            .map_err(|_| format!("Overlay editor OS window '{}' not found", title))?;
-
-        if hwnd.0.is_null() {
-            return Err(format!("Overlay editor HWND '{}' is null", title));
-        }
+        let hwnd = overlay_editor_hwnd(&window, &label)?;
 
         let rect = get_diablo_window_rect()?;
         let (fallback_width, fallback_height) = editor_window_size(&label)
@@ -1665,16 +1733,7 @@ fn resize_overlay_editor_window(
         let scale_factor = window.scale_factor().unwrap_or(1.0);
         let physical_width = logical_to_physical_u32(width, scale_factor);
         let physical_height = logical_to_physical_u32(height, scale_factor);
-        let title = overlay_editor_window_title(&label)
-            .ok_or_else(|| format!("Unsupported overlay editor window '{}'", label))?;
-        let title_wide: Vec<u16> = OsStr::new(title).encode_wide().chain(Some(0)).collect();
-
-        let hwnd = unsafe { FindWindowW(PCWSTR::null(), PCWSTR(title_wide.as_ptr())) }
-            .map_err(|_| format!("Overlay editor OS window '{}' not found", title))?;
-
-        if hwnd.0.is_null() {
-            return Err(format!("Overlay editor HWND '{}' is null", title));
-        }
+        let hwnd = overlay_editor_hwnd(&window, &label)?;
 
         let rect = get_diablo_window_rect()?;
         let position = window
@@ -2152,31 +2211,134 @@ fn default_soe_launcher_candidates() -> Vec<std::path::PathBuf> {
     candidates
 }
 
+const SOE_LAUNCHER_EXE_NAMES: &[&str] = &[
+    "pd2-soe-launcher.exe",
+    "PD2Launcher.exe",
+    "ProjectD2Launcher.exe",
+    "ProjectD2.exe",
+    "SanctuaryOfExile.exe",
+    "SoELauncher.exe",
+];
+
+fn is_exe_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("exe"))
+        .unwrap_or(false)
+}
+
+fn find_launcher_in_dir(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    if !dir.is_dir() {
+        return None;
+    }
+
+    for exe_name in SOE_LAUNCHER_EXE_NAMES {
+        let candidate = dir.join(exe_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut matches: Vec<std::path::PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_exe_path(path))
+        .filter(|path| {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            name.contains("launcher")
+                && (name.contains("soe")
+                    || name.contains("pd2")
+                    || name.contains("projectd2")
+                    || name.contains("sanctuary")
+                    || name.contains("exile"))
+        })
+        .collect();
+    matches.sort();
+    matches.into_iter().next()
+}
+
+fn launcher_search_dirs_from_path(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let base_dir = if path.is_dir() {
+        Some(path.to_path_buf())
+    } else {
+        path.parent().map(|parent| parent.to_path_buf())
+    };
+
+    let mut dirs = Vec::new();
+    let mut push_dir = |dir: std::path::PathBuf| {
+        if !dirs.iter().any(|existing: &std::path::PathBuf| existing == &dir) {
+            dirs.push(dir);
+        }
+    };
+
+    if let Some(dir) = base_dir {
+        push_dir(dir.clone());
+        if let Some(parent) = dir.parent() {
+            push_dir(parent.to_path_buf());
+            push_dir(parent.join("ProjectD2"));
+        }
+        push_dir(dir.join("ProjectD2"));
+    }
+
+    dirs
+}
+
+fn resolve_soe_launcher_path(path: Option<String>) -> Result<std::path::PathBuf, String> {
+    let selected = path
+        .map(|value| value.trim_matches('"').trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from);
+
+    if let Some(path) = selected {
+        if path.is_file() {
+            if is_exe_path(&path) {
+                return Ok(path);
+            }
+            return Err(format!(
+                "Selected launcher path is not an .exe file: {}",
+                path.display()
+            ));
+        }
+
+        if path.is_dir() {
+            for dir in launcher_search_dirs_from_path(&path) {
+                if let Some(found) = find_launcher_in_dir(&dir) {
+                    return Ok(found);
+                }
+            }
+            return Err(format!(
+                "The selected path is a folder, but no SoE launcher executable was found in it or next to it: {}. Select pd2-soe-launcher.exe, or the folder that contains it.",
+                path.display()
+            ));
+        }
+
+        return Err(format!("SoE launcher not found at {}", path.display()));
+    }
+
+    for candidate in default_soe_launcher_candidates() {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+
+    Err("SoE launcher was not found. Set the launcher path in General.".to_string())
+}
+
 #[tauri::command]
 fn detect_soe_launcher_path() -> Option<String> {
-    default_soe_launcher_candidates()
-        .into_iter()
-        .find(|path| path.exists())
+    resolve_soe_launcher_path(None)
+        .ok()
         .map(|path| path.display().to_string())
 }
 
 #[tauri::command]
 fn launch_soe_launcher(path: Option<String>) -> Result<(), String> {
-    let resolved = path
-        .filter(|value| !value.trim().is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            default_soe_launcher_candidates()
-                .into_iter()
-                .find(|candidate| candidate.exists())
-        })
-        .ok_or_else(|| {
-            "SoE launcher was not found. Set the launcher path in General.".to_string()
-        })?;
-
-    if !resolved.exists() {
-        return Err(format!("SoE launcher not found at {}", resolved.display()));
-    }
+    let resolved = resolve_soe_launcher_path(path)?;
 
     std::process::Command::new(&resolved)
         .current_dir(
@@ -2211,7 +2373,6 @@ fn main() {
                 filter_config: Arc::new(RwLock::new(initial_filter_config)),
                 filter_enabled: Arc::new(AtomicBool::new(false)),
                 verbose_filter_logging: Arc::new(AtomicBool::new(false)),
-                zone_transition_sync_enabled: Arc::new(AtomicBool::new(false)),
                 reveal_hidden_active: Arc::new(AtomicBool::new(false)),
                 filter_config_generation: Arc::new(AtomicU64::new(0)),
                 scanner_thread: Arc::new(Mutex::new(None)),
@@ -2227,7 +2388,6 @@ fn main() {
             let filter_config = state.filter_config.clone();
             let filter_enabled = state.filter_enabled.clone();
             let verbose_filter_logging = state.verbose_filter_logging.clone();
-            let zone_transition_sync_enabled = state.zone_transition_sync_enabled.clone();
             let reveal_hidden_active = state.reveal_hidden_active.clone();
             let filter_config_generation = state.filter_config_generation.clone();
             let scanner_thread = state.scanner_thread.clone();
@@ -2238,8 +2398,8 @@ fn main() {
             app.manage(state);
 
             // Calm sync model: the proven scanner still watches drops, but it queues
-            // them in memory so the frontend applies one quiet batch on Save & Exit,
-            // zone-change, or Sync All.
+            // them in memory so the frontend applies one quiet batch on Save & Exit
+            // or Sync All.
             app.state::<AppState>().account_stats_watcher.start(app.handle().clone());
             spawn_auto_scanner(
                 is_scanning.clone(),
@@ -2256,12 +2416,6 @@ fn main() {
                 silent_drop_queue,
                 app.handle().clone(),
             );
-            spawn_zone_transition_watcher(
-                should_auto_scan.clone(),
-                zone_transition_sync_enabled.clone(),
-                app.handle().clone(),
-            );
-
             // Initialize hotkey state
             let hotkey_state = HotkeyState::new();
             let edit_mode_state = EditModeState::new();
@@ -2285,10 +2439,6 @@ fn main() {
                     );
                     verbose_filter_logging
                         .store(loaded_settings.verbose_filter_logging, Ordering::SeqCst);
-                    zone_transition_sync_enabled.store(
-                        loaded_settings.zone_transition_sync_enabled,
-                        Ordering::SeqCst,
-                    );
                 }
                 Err(e) => {
                     log_error(&format!("Failed to load settings for hotkeys: {}", e));
@@ -2396,7 +2546,6 @@ fn main() {
             set_filter_config,
             set_filter_enabled,
             set_verbose_filter_logging,
-            set_zone_transition_sync_enabled,
             sync_overlay_with_game,
             set_overlay_interactive,
             set_always_show_overlays,
@@ -2406,6 +2555,7 @@ fn main() {
             move_overlay_editor_window,
             resize_overlay_editor_window,
             get_game_window_rect,
+            get_overlay_diagnostics,
             parse_filter_dsl,
             validate_filter_dsl,
             explain_filter_line,
@@ -2471,6 +2621,7 @@ fn main() {
             grail_log::read_grail_log,
             grail_log::clear_grail_log,
             hook_log::read_hook_drop_events,
+            hook_log::compact_hook_drop_log,
             open_app_folder,
             open_external_url,
             detect_soe_launcher_path,

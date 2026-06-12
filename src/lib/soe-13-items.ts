@@ -3,6 +3,7 @@ export const SOE_13_UNIQUE_ITEMS = [
   'Svalinn',
   'Rathpith Globe',
   'Screams of the Dessicated',
+  "Sage's Defiance",
 ] as const;
 
 export const SOE_13_HATRED_ORB_ITEMS = [

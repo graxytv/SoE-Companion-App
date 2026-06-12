@@ -131,7 +131,6 @@ impl AccountStatsWatcher {
                     }
 
                     thread::sleep(Duration::from_millis(150));
-                    let _ = app.emit("save-folder-changed", ());
                     if let Ok(result) = windows_impl::read_accountstats_stash(None) {
                         let signature = account_stats_signature(&result);
                         let mut guard = match last_signature.lock() {

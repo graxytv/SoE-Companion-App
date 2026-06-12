@@ -167,8 +167,11 @@
 
   function setManualLauncherPath(): void {
     const selected = window.prompt(
-      'Enter the full path to pd2-soe-launcher.exe:',
-      settingsStore.settings.soeLauncherPath ?? launcherDetectedPath ?? 'C:\\Program Files\\PD2 Sanctuary of Exile\\pd2-soe-launcher.exe',
+      'Enter the full path to pd2-soe-launcher.exe, or paste your SoE install / ProjectD2 folder:',
+      settingsStore.settings.soeLauncherPath ??
+        launcherDetectedPath ??
+        settingsStore.settings.projectD2Path ??
+        'C:\\Program Files\\PD2 Sanctuary of Exile\\pd2-soe-launcher.exe',
     );
     const path = selected?.trim();
     if (!path) return;
@@ -459,7 +462,7 @@
           <div class="step-grid">
             <div class="step-card">
               <h3>SoE Launcher</h3>
-              <p>The Home Play button opens the SoE launcher. If auto-detect misses it, save the launcher path manually.</p>
+              <p>The Home Play button opens the SoE launcher. If auto-detect misses it, save the launcher executable or the folder that contains it.</p>
               <div class="path-box">{settingsStore.settings.soeLauncherPath ?? launcherDetectedPath ?? 'No launcher path saved yet.'}</div>
               <div class="action-row">
                 <Button variant="secondary" size="sm" disabled={busy === 'launcher'} onclick={detectLauncher}>Detect</Button>

@@ -3,7 +3,7 @@
 //! This module implements the core NotifierMain logic from D2Stats.au3
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 #[cfg(target_os = "windows")]
 use std::sync::atomic::Ordering;
@@ -106,6 +106,99 @@ const FATE_CARD_NAMES: &[&str] = &[
     "The Saint's Treasure",
     "The Inventor",
 ];
+
+const RUNE_NAMES: &[&str] = &[
+    "El", "Eld", "Tir", "Nef", "Eth", "Ith", "Tal", "Ral", "Ort", "Thul", "Amn", "Sol",
+    "Shael", "Dol", "Hel", "Io", "Lum", "Ko", "Fal", "Lem", "Pul", "Um", "Mal", "Ist",
+    "Gul", "Vex", "Ohm", "Lo", "Sur", "Ber", "Jah", "Cham", "Zod",
+];
+
+fn normalized_tracker_name(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['\u{2018}', '\u{2019}'], "'")
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn runeword_name_lookup() -> &'static HashMap<String, String> {
+    static LOOKUP: OnceLock<HashMap<String, String>> = OnceLock::new();
+    LOOKUP.get_or_init(|| {
+        let raw = include_str!("../../src/lib/data/soe-runewords.json");
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return HashMap::new();
+        };
+        let Some(rows) = value.as_array() else {
+            return HashMap::new();
+        };
+
+        let mut lookup = HashMap::new();
+        for row in rows {
+            let display_name = row
+                .get("displayName")
+                .and_then(|value| value.as_str())
+                .or_else(|| row.get("runewordName").and_then(|value| value.as_str()))
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let Some(canonical) = display_name else {
+                continue;
+            };
+
+            for key in ["displayName", "runewordName", "name"] {
+                if let Some(alias) = row
+                    .get(key)
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    let normalized = normalized_tracker_name(alias);
+                    if !normalized.is_empty() {
+                        lookup.insert(normalized, canonical.to_string());
+                    }
+                }
+            }
+        }
+        lookup
+    })
+}
+
+fn runeword_name_from_text(value: &str) -> Option<String> {
+    let lookup = runeword_name_lookup();
+    for line in value.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if let Some(name) = lookup.get(&normalized_tracker_name(line)) {
+            return Some(name.clone());
+        }
+    }
+    lookup.get(&normalized_tracker_name(value)).cloned()
+}
+
+#[cfg(target_os = "windows")]
+fn apply_item_name_from_tooltip(scanned: &mut ScannedItem, raw_name: &str) {
+    let cleaned = strip_color_codes(raw_name);
+
+    if let Some(runeword_name) = runeword_name_from_text(&cleaned) {
+        scanned.name = Some(runeword_name);
+        scanned.is_runeword = true;
+        return;
+    }
+
+    let selected_line = if scanned.is_runeword {
+        cleaned.lines().find(|line| !line.trim().is_empty())
+    } else {
+        cleaned.lines().rev().find(|line| !line.trim().is_empty())
+    };
+
+    if let Some(line) = selected_line {
+        scanned.name = Some(line.trim().to_string());
+    } else if !cleaned.trim().is_empty() {
+        scanned.name = Some(cleaned.trim().to_string());
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GoblinDetectedEvent {
@@ -313,6 +406,8 @@ struct UniqueInfo {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ItemsDictionary {
     pub base_types: Vec<String>,
+    #[serde(default)]
+    pub base_code_names: std::collections::HashMap<String, String>,
     pub uniques_tu: Vec<String>,
     pub uniques_su: Vec<String>,
     pub uniques_ssu: Vec<String>,
@@ -622,6 +717,9 @@ impl DropScanner {
         {
             return true;
         }
+        if event.is_runeword {
+            return true;
+        }
         Self::is_fate_card_event(event)
             || Self::is_rune_event(event)
             || Self::contains_tracker_keyword(event, "charm")
@@ -759,18 +857,18 @@ impl DropScanner {
     }
 
     fn is_rune_event(event: &ItemDropEvent) -> bool {
-        const RUNES: &[&str] = &[
-            "el", "eld", "tir", "nef", "eth", "ith", "tal", "ral", "ort", "thul", "amn", "sol",
-            "shael", "dol", "hel", "io", "lum", "ko", "fal", "lem", "pul", "um", "mal", "ist",
-            "gul", "vex", "ohm", "lo", "sur", "ber", "jah", "cham", "zod",
-        ];
+        if rune_name_from_code(&event.item_code).is_some() {
+            return true;
+        }
+
         let name = event.name.trim().to_ascii_lowercase();
         let base = event.base_name.trim().to_ascii_lowercase();
-        RUNES.iter().any(|rune| {
+        RUNE_NAMES.iter().any(|rune| {
+            let rune = rune.to_ascii_lowercase();
             name == format!("{} rune", rune)
-                || name == *rune
+                || name == rune
                 || base == format!("{} rune", rune)
-                || base == *rune
+                || base == rune
         })
     }
 
@@ -1115,14 +1213,7 @@ impl DropScanner {
             {
                 let injector = self.state.injector.lock().unwrap();
                 if let Ok(raw_name) = injector.get_item_name(&self.state.ctx.process, p_item) {
-                    let cleaned = strip_color_codes(&raw_name);
-                    if let Some(last_line) =
-                        cleaned.lines().rev().find(|line| !line.trim().is_empty())
-                    {
-                        scanned.name = Some(last_line.to_string());
-                    } else if !cleaned.trim().is_empty() {
-                        scanned.name = Some(cleaned.trim().to_string());
-                    }
+                    apply_item_name_from_tooltip(&mut scanned, &raw_name);
                 }
                 if let Ok(raw_stats) = injector.get_item_stats(&self.state.ctx.process, p_item) {
                     let cleaned = strip_color_codes(&raw_stats);
@@ -1194,15 +1285,7 @@ impl DropScanner {
 
             // Try to resolve item name via injected GetItemName.
             if let Ok(raw_name) = injector.get_item_name(&self.state.ctx.process, p_unit) {
-                let cleaned = strip_color_codes(&raw_name);
-
-                // Use the last non-empty line as the display name (matches D2Stats behavior).
-                if let Some(last_line) = cleaned.lines().rev().find(|line| !line.trim().is_empty())
-                {
-                    scanned.name = Some(last_line.to_string());
-                } else if !cleaned.trim().is_empty() {
-                    scanned.name = Some(cleaned.trim().to_string());
-                }
+                apply_item_name_from_tooltip(&mut scanned, &raw_name);
             }
 
             // Try to resolve item stats text via injected GetItemStats.
@@ -1434,6 +1517,24 @@ impl DropScanner {
         base_types.sort();
         base_types.dedup();
 
+        let mut base_code_names: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for info in class_cache {
+            let code = info.code.trim().to_ascii_lowercase();
+            let name = info.base_name.trim();
+            if !code.is_empty() && !name.is_empty() {
+                let n = word_tier.replace(name, "");
+                let cleaned = if rune_container.is_match(&n) {
+                    n.into_owned()
+                } else {
+                    count_suffix.replace(&n, "").into_owned()
+                };
+                if !cleaned.trim().is_empty() {
+                    base_code_names.insert(code, cleaned.trim().to_string());
+                }
+            }
+        }
+
         // On name collision keep the highest kind (Sssu > Ssu > Su > Tu)
         // so the strongest tier of a multi-record unique survives dedup.
         let mut kind_by_name: std::collections::HashMap<String, UniqueKind> =
@@ -1486,6 +1587,7 @@ impl DropScanner {
 
         Some(ItemsDictionary {
             base_types,
+            base_code_names,
             uniques_tu,
             uniques_su,
             uniques_ssu,
@@ -1908,6 +2010,14 @@ fn fate_card_name_from_code(code: &str) -> Option<&'static str> {
     let suffix = code.strip_prefix("fa")?;
     let index = suffix.parse::<usize>().ok()?.checked_sub(1)?;
     FATE_CARD_NAMES.get(index).copied()
+}
+
+#[cfg(target_os = "windows")]
+fn rune_name_from_code(code: &str) -> Option<&'static str> {
+    let code = code.trim().to_ascii_lowercase();
+    let suffix = code.strip_prefix('r')?;
+    let index = suffix.parse::<usize>().ok()?.checked_sub(1)?;
+    RUNE_NAMES.get(index).copied()
 }
 
 #[cfg(target_os = "windows")]

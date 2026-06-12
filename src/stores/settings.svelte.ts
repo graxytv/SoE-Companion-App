@@ -24,6 +24,7 @@ import {
   type DropTrackerCategoryKey,
   type DropTrackerCategorySettings,
   type DropTrackerCounts,
+  type DropTrackerItemLike,
   type RuneName,
   type RuneTrackerCounts,
   type RuneTrackerVisibility,
@@ -150,6 +151,7 @@ export type { GsfPlayer, GsfWantedItem, GsfWantedStatus, GsfItemCategory, GsfIte
 
 interface LiveDropRecordInput {
   displayName: string;
+  drop?: DropTrackerItemLike | null;
   categories: DropTrackerCategoryKey[];
   isNewGrail?: boolean;
   source?: string;
@@ -273,6 +275,8 @@ export interface AppSettings {
   dropsTrackerRecentItems: DropTrackerRecentItem[];
   /** Persistent hook-log event IDs that have already been applied. */
   processedHookDropIds: string[];
+  /** Last byte offset drained from the hook drop log. */
+  hookDropLogCursor: number;
   /** When true, suppress repeated sightings of the same item during a single run. */
   dropsTrackerPreventDuplicates: boolean;
   /** When true, temporarily pause drop/holy-grail tracking while muling items. */
@@ -395,10 +399,6 @@ export interface AppSettings {
   saveExitAutomationDelayMs: number;
   /** Wait after Save & Exit before clicking Single Player. */
   saveExitAutomationMainMenuWaitMs: number;
-  /** When true, a lightweight watcher syncs after Diablo II loading/zone transitions settle. */
-  zoneTransitionSyncEnabled: boolean;
-  /** One-time migration flag so old installs get zone sync enabled once but user choices persist afterward. */
-  zoneTransitionSyncDefaultedOn: boolean;
   /** When true, GSF matching and notifications are enabled. */
   gsfEnabled: boolean;
   /** When true, matched GSF drops add Needed by text to loot notifications. */
@@ -595,6 +595,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   totalDropsTrackerCounts: emptyDropTrackerCounts(),
   dropsTrackerRecentItems: [],
   processedHookDropIds: [],
+  hookDropLogCursor: 0,
   dropsTrackerPreventDuplicates: false,
   dropsTrackerMulingMode: false,
   dropsTrackerMulingStartedAtMs: null,
@@ -656,8 +657,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   saveExitAutomationCoordinateModePercent: false,
   saveExitAutomationDelayMs: 300,
   saveExitAutomationMainMenuWaitMs: 10000,
-  zoneTransitionSyncEnabled: true,
-  zoneTransitionSyncDefaultedOn: true,
   gsfEnabled: true,
   gsfNotificationEnabled: true,
   gsfSoundSlot: null,
@@ -727,6 +726,11 @@ class SettingsStore {
       }))
       .filter((item) => typeof item.source === "string" && item.source.trim().length > 0)
       .filter((item) => !this.isPlaceholderItemName(item.name))
+      .filter((item) =>
+        item.categories.length > 0 ||
+        item.dropsTrackerCategories.length > 0 ||
+        item.totalDropsTrackerCategories.length > 0,
+      )
       .slice(0, 20);
   }
 
@@ -741,6 +745,11 @@ class SettingsStore {
       ids.push(id);
     }
     return ids.slice(-5000);
+  }
+
+  private normalizeHookDropLogCursor(value: unknown): number {
+    const cursor = Number(value);
+    return Number.isFinite(cursor) && cursor > 0 ? Math.floor(cursor) : 0;
   }
 
   private normalizeCategoryList(value: unknown): DropTrackerCategoryKey[] {
@@ -772,7 +781,7 @@ class SettingsStore {
     return { x, y };
   }
 
-  private normalizeOverlayWidth(value: unknown, fallback: number, max = 420, min = 80): number {
+  private normalizeOverlayWidth(value: unknown, fallback: number, max = 4000, min = 1): number {
     const width = typeof value === "number" && Number.isFinite(value)
       ? Math.round(value)
       : fallback;
@@ -783,7 +792,7 @@ class SettingsStore {
     const height = typeof value === "number" && Number.isFinite(value)
       ? Math.round(value)
       : fallback;
-    return Math.max(40, Math.min(900, height));
+    return Math.max(1, Math.min(4000, height));
   }
 
   private normalizeTimerStart(value: unknown): number {
@@ -907,6 +916,20 @@ class SettingsStore {
       }
     }
     return out;
+  }
+
+  private mergeFateCardCountsMax(
+    first: FateCardCounts,
+    second: FateCardCounts,
+  ): FateCardCounts {
+    return this.normalizeFateCardCounts(
+      Object.fromEntries(
+        SOE_13_FATE_CARD_ITEMS.map((cardName) => [
+          cardName,
+          Math.max(first[cardName] ?? 0, second[cardName] ?? 0),
+        ]),
+      ),
+    );
   }
 
   private withCompletedFateCardStacks(
@@ -1158,6 +1181,9 @@ class SettingsStore {
       processedHookDropIds: this.normalizeProcessedHookDropIds(
         (settings as Partial<AppSettings>).processedHookDropIds,
       ),
+      hookDropLogCursor: this.normalizeHookDropLogCursor(
+        (settings as Partial<AppSettings>).hookDropLogCursor,
+      ),
       dropsTrackerRunCount: Math.max(
         0,
         Math.floor(settings.dropsTrackerRunCount ?? 0),
@@ -1244,8 +1270,6 @@ class SettingsStore {
       runeTrackerOverlayWidth: this.normalizeOverlayWidth(
         settings.runeTrackerOverlayWidth,
         DEFAULT_SETTINGS.runeTrackerOverlayWidth,
-        420,
-        96,
       ),
       runeTrackerOverlayHeight: this.normalizeOverlayHeight(
         settings.runeTrackerOverlayHeight,
@@ -1341,8 +1365,6 @@ class SettingsStore {
       achievementPopupOverlayWidth: this.normalizeOverlayWidth(
         settings.achievementPopupOverlayWidth,
         DEFAULT_SETTINGS.achievementPopupOverlayWidth,
-        420,
-        220,
       ),
       achievementPopupOverlayHeight: this.normalizeOverlayHeight(
         settings.achievementPopupOverlayHeight,
@@ -1405,13 +1427,6 @@ class SettingsStore {
         500,
         30000,
       ),
-      zoneTransitionSyncEnabled:
-        settings.zoneTransitionSyncDefaultedOn !== true &&
-        settings.zoneTransitionSyncEnabled === false
-          ? true
-          : settings.zoneTransitionSyncEnabled ??
-            DEFAULT_SETTINGS.zoneTransitionSyncEnabled,
-      zoneTransitionSyncDefaultedOn: true,
       gsfEnabled: settings.gsfEnabled ?? DEFAULT_SETTINGS.gsfEnabled,
       gsfNotificationEnabled:
         settings.gsfNotificationEnabled ?? DEFAULT_SETTINGS.gsfNotificationEnabled,
@@ -1603,6 +1618,19 @@ class SettingsStore {
           ...DEFAULT_SETTINGS,
           ...external,
         });
+        const fateCardDropCounts = this.mergeFateCardCountsMax(
+          this._settings.fateCardDropCounts,
+          merged.fateCardDropCounts,
+        );
+        merged.fateCardDropCounts = fateCardDropCounts;
+        merged.holyGrailFound = this.withCompletedFateCardStacks(
+          this.mergeHolyGrailFoundMaps(
+            this._settings.holyGrailFound,
+            merged.holyGrailFound,
+            "earliest",
+          ),
+          fateCardDropCounts,
+        );
         for (const key of this._dirtyKeys) {
           (merged as AppSettings)[key] = this._settings[key] as never;
         }
@@ -1654,13 +1682,6 @@ class SettingsStore {
 
   setRunewordPlannerStashPath(path: string | null): void {
     this.set("runewordPlannerStashPath", path && path.trim() ? path.trim() : null);
-  }
-
-  setZoneTransitionSyncEnabled(enabled: boolean): void {
-    this.update({
-      zoneTransitionSyncEnabled: enabled,
-      zoneTransitionSyncDefaultedOn: true,
-    });
   }
 
   setMainTabOrder(order: string[]): void {
@@ -1971,7 +1992,7 @@ class SettingsStore {
   setRuneTrackerOverlayWidth(width: number): void {
     this.set(
       "runeTrackerOverlayWidth",
-      this.normalizeOverlayWidth(width, DEFAULT_SETTINGS.runeTrackerOverlayWidth, 420, 96),
+      this.normalizeOverlayWidth(width, DEFAULT_SETTINGS.runeTrackerOverlayWidth),
     );
   }
 
@@ -2067,7 +2088,7 @@ class SettingsStore {
   setAchievementPopupOverlayWidth(width: number): void {
     this.set(
       "achievementPopupOverlayWidth",
-      this.normalizeOverlayWidth(width, DEFAULT_SETTINGS.achievementPopupOverlayWidth, 420, 220),
+      this.normalizeOverlayWidth(width, DEFAULT_SETTINGS.achievementPopupOverlayWidth),
     );
   }
 
@@ -2542,8 +2563,16 @@ class SettingsStore {
   }
 
   applyHolyGrailFoundSnapshot(found: HolyGrailFoundMap): void {
+    const merged = this.withCompletedFateCardStacks(
+      this.mergeHolyGrailFoundMaps(
+        this._settings.holyGrailFound,
+        this.normalizeHolyGrailFound(found),
+        "earliest",
+      ),
+      this._settings.fateCardDropCounts,
+    );
     this.update({
-      holyGrailFound: this.normalizeHolyGrailFound(found),
+      holyGrailFound: merged,
     });
   }
 
@@ -3017,6 +3046,12 @@ class SettingsStore {
     );
   }
 
+  setHookDropLogCursor(cursor: number): void {
+    const normalized = this.normalizeHookDropLogCursor(cursor);
+    if (this._settings.hookDropLogCursor === normalized) return;
+    this.set("hookDropLogCursor", normalized);
+  }
+
   recordLiveDrop(input: LiveDropRecordInput): void {
     const current = this._settings;
     const categories = Array.from(new Set(input.categories));
@@ -3027,7 +3062,7 @@ class SettingsStore {
       (category) => current.totalDropsTrackerCategories[category],
     );
     const shouldRecordDropCounts = dropsCategories.length > 0 || totalCategories.length > 0;
-    const runeName = runeNameFromDrop({ name: input.displayName });
+    const runeName = runeNameFromDrop(input.drop ?? { name: input.displayName });
     const tracksUnique = categories.includes("unique") || categories.includes("hellforged");
     const cleanName =
       canonicalTrackedItemName(input.displayName) ||
@@ -3215,14 +3250,17 @@ class SettingsStore {
     const snapshotHolyGrailFound = snapshot.holyGrailFound
       ? this.normalizeHolyGrailFound(snapshot.holyGrailFound)
       : null;
+    const mergedFateCardDropCounts = snapshotFateCardDropCounts
+      ? this.mergeFateCardCountsMax(this._settings.fateCardDropCounts, snapshotFateCardDropCounts)
+      : null;
+    const baseHolyGrailFound = snapshotHolyGrailFound
+      ? this.mergeHolyGrailFoundMaps(this._settings.holyGrailFound, snapshotHolyGrailFound, "earliest")
+      : this._settings.holyGrailFound;
     const mergedHolyGrailFound =
-      snapshotHolyGrailFound || snapshotFateCardDropCounts
+      snapshotHolyGrailFound || mergedFateCardDropCounts
         ? this.withCompletedFateCardStacks(
-            this.pruneIncompleteFateCardStacks(
-              snapshotHolyGrailFound ?? this._settings.holyGrailFound,
-              snapshotFateCardDropCounts ?? this._settings.fateCardDropCounts,
-            ),
-            snapshotFateCardDropCounts ?? this._settings.fateCardDropCounts,
+            baseHolyGrailFound,
+            mergedFateCardDropCounts ?? this._settings.fateCardDropCounts,
           )
         : null;
     const partial: Partial<AppSettings> = {
@@ -3244,7 +3282,7 @@ class SettingsStore {
       ...(snapshot.fateCardCounts
         ? { fateCardCounts: this.normalizeFateCardCounts(snapshot.fateCardCounts) }
         : {}),
-      ...(snapshotFateCardDropCounts ? { fateCardDropCounts: snapshotFateCardDropCounts } : {}),
+      ...(mergedFateCardDropCounts ? { fateCardDropCounts: mergedFateCardDropCounts } : {}),
       ...(snapshotFateCardTrackerCounts ? { fateCardTrackerCounts: snapshotFateCardTrackerCounts } : {}),
       ...(mergedHolyGrailFound ? { holyGrailFound: mergedHolyGrailFound } : {}),
       ...(snapshot.achievementStats

@@ -5,7 +5,7 @@
     import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
     import { onMount } from "svelte";
     import { Tabs } from "../components";
-    import { windowState, itemsDictionaryStore, settingsStore, type DropTrackerStateSnapshot, type WindowState } from "../stores";
+    import { windowState, itemsDictionaryStore, settingsStore, type DropTrackerStateSnapshot, type ItemsDictionary, type WindowState } from "../stores";
     import { categorizeDrop, type DropTrackerCategoryKey } from "../lib/drop-tracker-categories";
     import { materialAchievementNameFromDrop } from "../lib/achievements";
     import {
@@ -53,21 +53,22 @@
     const GAME_ENTRY_TRACKING_SUPPRESSION_MS = 10_000;
     const MAX_LIVE_KILL_DELTA = 50_000;
     const QUIET_SYNC_DEBOUNCE_MS = 2500;
+    const SAVE_EXIT_SYNC_DEBOUNCE_MS = 250;
     const QUIET_SYNC_COOLDOWN_MS = 10_000;
+    const SAVE_EXIT_CONFIRM_MS = 750;
+    const SAVE_EXIT_FAST_REENTRY_MIN_MS = 0;
+    const SAVE_EXIT_LATE_HOOK_PASS_MS = 1000;
     let suppressTrackingUntilMs = $state(0);
-    let quietSyncBusy = false;
+    let quietSyncBusy = $state(false);
+    let quietSyncPending = $state(false);
     let quietSyncTimer: ReturnType<typeof setTimeout> | null = null;
     let quietSyncSources = new Set<string>();
     let lastQuietSyncAtMs = 0;
     let masterSyncing = $state(false);
-    let zoneTransitionSyncEnabled = $derived(settingsStore.settings.zoneTransitionSyncEnabled);
-
-    $effect(() => {
-        const enabled = zoneTransitionSyncEnabled;
-        void invoke("set_zone_transition_sync_enabled", { enabled }).catch((error) => {
-            console.warn("[MainWindow] Failed to update zone-transition sync state:", error);
-        });
-    });
+    let saveExitSyncTimer: ReturnType<typeof setTimeout> | null = null;
+    let saveExitMenuEnteredAtMs = 0;
+    let syncUiActive = $derived(masterSyncing || quietSyncBusy);
+    let syncUiLabel = $derived(masterSyncing ? "Syncing All" : quietSyncBusy ? "Syncing" : quietSyncPending ? "Queued" : "Sync All");
 
     const tabs = [
         { id: "home", label: "Home" },
@@ -113,10 +114,27 @@
         const previous = gameStatus;
         gameStatus = status;
         if (status === "ingame" && previous !== "ingame") {
+            if (saveExitSyncTimer) {
+                const menuElapsedMs = saveExitMenuEnteredAtMs > 0 ? Date.now() - saveExitMenuEnteredAtMs : 0;
+                clearTimeout(saveExitSyncTimer);
+                saveExitSyncTimer = null;
+                saveExitMenuEnteredAtMs = 0;
+                if (menuElapsedMs >= SAVE_EXIT_FAST_REENTRY_MIN_MS) {
+                    scheduleQuietSync("save-exit");
+                }
+            }
             suppressTrackingUntilMs = Date.now() + GAME_ENTRY_TRACKING_SUPPRESSION_MS;
         }
         if (status === "menu" && previous === "ingame") {
-            scheduleQuietSync("save-exit");
+            if (saveExitSyncTimer) clearTimeout(saveExitSyncTimer);
+            saveExitMenuEnteredAtMs = Date.now();
+            saveExitSyncTimer = setTimeout(() => {
+                saveExitSyncTimer = null;
+                saveExitMenuEnteredAtMs = 0;
+                if (gameStatus === "menu") {
+                    scheduleQuietSync("save-exit");
+                }
+            }, SAVE_EXIT_CONFIRM_MS);
         }
     }
 
@@ -207,6 +225,16 @@
         linesRead: number;
         skippedProcessed: number;
         parseErrors: number;
+        cursorBefore: number;
+        cursorAfter: number;
+        logLength: number;
+    }
+
+    interface HookDropCompactResult {
+        logPath: string;
+        oldLength: number;
+        newLength: number;
+        compacted: boolean;
     }
 
     interface CollectedDropRecordResult {
@@ -280,8 +308,9 @@
     }
 
     function hasTrustedExactUniqueSetName(item: ItemDrop): boolean {
-        if (!isUniqueOrSetDrop(item) || !item.is_identified) return true;
         if (holyGrailItemFromDrop(item)) return true;
+        if (!isUniqueOrSetDrop(item)) return true;
+        if (!item.is_identified) return false;
         const source = String(item.source ?? "").toLowerCase();
         if (source === "grail-log") return true;
         if (cleanTrackedItemName(item.canonical_name || item.canonicalName || "")) return true;
@@ -290,18 +319,69 @@
         return /\bhellforged\b/i.test(cleanedName);
     }
 
+    function itemCode(item: ItemDrop): string {
+        return String(item.item_code || item.itemCode || "").trim().toLowerCase();
+    }
+
+    function isPlaceholderItemName(value: unknown, item?: ItemDrop): boolean {
+        const raw = String(value ?? "").trim();
+        if (!raw) return true;
+        const normalized = raw.toLowerCase();
+        const code = item ? itemCode(item) : "";
+        return (
+            normalized === "item-code" ||
+            normalized === "unknown item" ||
+            /^item\s+#\d+$/i.test(raw) ||
+            (!!code && normalized === code)
+        );
+    }
+
+    function baseNameFromCode(item: ItemDrop, dict: ItemsDictionary = itemsDictionaryStore.dict): string {
+        const code = itemCode(item);
+        const mapped = code ? dict.base_code_names?.[code] : "";
+        if (mapped && !isPlaceholderItemName(mapped, item)) return cleanTrackedItemName(mapped);
+        if (item.base_name && !isPlaceholderItemName(item.base_name, item)) return cleanTrackedItemName(item.base_name);
+        return "";
+    }
+
+    function qualityLabelForGenericDrop(item: ItemDrop): string {
+        const quality = String(item.quality ?? "").trim().toLowerCase();
+        if (item.is_runeword || item.isRuneword || quality === "runeword") return "Runeword";
+        if (quality === "rare") return "Rare";
+        if (quality === "magic") return "Magic";
+        if (quality === "crafted") return "Crafted";
+        if (quality === "set") return "Set";
+        if (quality === "unique") return "Unique";
+        return quality ? `${quality.charAt(0).toUpperCase()}${quality.slice(1)}` : "Dropped";
+    }
+
+    function genericDropDisplayName(item: ItemDrop): string {
+        const baseName = baseNameFromCode(item);
+        const label = qualityLabelForGenericDrop(item);
+        return baseName ? `${label} ${baseName}` : `${label} item`;
+    }
+
     function trackedItemDisplayName(item: ItemDrop): string {
-        if (isUnidentifiedUniqueSetDrop(item)) {
-            return `Unidentified ${cleanTrackedItemName(item.base_name || item.name || "item")}`;
-        }
         const codeOnlyGrailItem = holyGrailItemFromDrop(item);
-        if (codeOnlyGrailItem && (item.item_code || item.itemCode)) {
+        if (codeOnlyGrailItem && (item.item_code || item.itemCode || isUnidentifiedUniqueSetDrop(item))) {
             return codeOnlyGrailItem.name;
         }
+        if (isUnidentifiedUniqueSetDrop(item)) {
+            const baseName = baseNameFromCode(item);
+            return baseName ? `Unidentified ${baseName}` : "Unidentified item";
+        }
         const canonicalName = cleanTrackedItemName(item.canonical_name || item.canonicalName || "");
-        if (canonicalName) return canonicalTrackedItemName(canonicalName, inferHolyGrailCategory(item));
-        if (item.name) return canonicalTrackedItemName(item.name, inferHolyGrailCategory(item));
-        if (item.base_name) return canonicalTrackedItemName(item.base_name, inferHolyGrailCategory(item));
+        if (canonicalName && !isPlaceholderItemName(canonicalName, item)) {
+            return canonicalTrackedItemName(canonicalName, inferHolyGrailCategory(item));
+        }
+        if (item.name && !isPlaceholderItemName(item.name, item)) {
+            return canonicalTrackedItemName(item.name, inferHolyGrailCategory(item));
+        }
+        const genericName = genericDropDisplayName(item);
+        if (genericName) return genericName;
+        if (item.base_name && !isPlaceholderItemName(item.base_name, item)) {
+            return canonicalTrackedItemName(item.base_name, inferHolyGrailCategory(item));
+        }
         return "Unknown item";
     }
 
@@ -310,11 +390,12 @@
         if (grailItem?.category === "su") return ["unique"];
         if (grailItem?.category === "ssu") return ["hellforged"];
         if (grailItem?.category === "sets") return ["sets"];
+        if (grailItem?.category === "runewords") return ["runewords"];
         if (grailItem?.category === "fateCards") return ["fateCard"];
         if (grailItem?.category === "hatredOrbs") return ["hatredOrb"];
         if (grailItem?.category === "essences") return ["essence"];
         if (grailItem?.category === "ascendancy") return ["ascendancy"];
-        if (!isUnidentifiedUniqueSetDrop(item) && hasTrustedExactUniqueSetName(item)) {
+        if (hasTrustedExactUniqueSetName(item)) {
             return categorizeDrop(item);
         }
         return String(item.quality ?? "").toLowerCase() === "set" ? ["sets"] : ["unique"];
@@ -329,14 +410,14 @@
         const identifyInventoryEvent = isIdentifyInventoryEvent(item);
         const grailDropItem = holyGrailItemFromDrop(item);
         let recordedNewGrailItem = false;
-        if (!isUnidentifiedUniqueSetDrop(item) && hasTrustedExactUniqueSetName(item)) {
+        if (grailDropItem && hasTrustedExactUniqueSetName(item)) {
             recordedNewGrailItem = settingsStore.recordHolyGrailDrop(item);
         }
 
         const categories = trackingCategoriesForDrop(item);
         const displayName = hasTrustedExactUniqueSetName(item)
             ? trackedItemDisplayName(item)
-            : `Unverified ${cleanTrackedItemName(item.canonical_name || item.canonicalName || item.base_name || item.name || item.quality || "item")}`;
+            : `Unverified ${genericDropDisplayName(item)}`;
         const trackerMaterialName = materialTrackerNameFromDrop(item);
         const matchedMaterialName = materialNameFromDrop(item);
         const materialName =
@@ -385,6 +466,7 @@
 
             settingsStore.recordLiveDrop({
                 displayName,
+                drop: item,
                 categories,
                 isNewGrail: recordedNewGrailItem,
                 source: debugSource,
@@ -410,11 +492,39 @@
         try {
             return await invoke<HookDropEventsResult>("read_hook_drop_events", {
                 processedIds: settingsStore.settings.processedHookDropIds,
+                cursor: settingsStore.settings.hookDropLogCursor,
             });
         } catch (error) {
             console.warn(`[MainWindow] Failed to read hook drop events for ${reason}:`, error);
             return null;
         }
+    }
+
+    async function compactHookDropLog(cursor: number): Promise<void> {
+        if (gameStatus === "ingame" || cursor <= 0) return;
+        try {
+            const result = await invoke<HookDropCompactResult>("compact_hook_drop_log", { cursor });
+            if (result.compacted) {
+                settingsStore.setHookDropLogCursor(0);
+            }
+        } catch (error) {
+            console.warn("[MainWindow] Failed to compact hook drop log:", error);
+        }
+    }
+
+    async function advanceHookDropCursorIfClean(
+        hookDrops: HookDropEventsResult | null,
+        hookProcessingFailed: boolean,
+    ): Promise<void> {
+        if (
+            !hookDrops ||
+            hookProcessingFailed ||
+            hookDrops.cursorAfter <= hookDrops.cursorBefore
+        ) {
+            return;
+        }
+        settingsStore.setHookDropLogCursor(hookDrops.cursorAfter);
+        await compactHookDropLog(hookDrops.cursorAfter);
     }
 
     async function flushCollectedDrops(reason: string): Promise<number> {
@@ -431,7 +541,10 @@
         }
 
         const hookEvents = hookDrops?.events ?? [];
-        if (drops.length === 0 && hookEvents.length === 0) return 0;
+        if (drops.length === 0 && hookEvents.length === 0) {
+            await advanceHookDropCursorIfClean(hookDrops, false);
+            return 0;
+        }
         const holyGrailItems = buildHolyGrailItems(itemsDictionaryStore.dict);
         let applied = 0;
         const newGrailNotifications: ItemDrop[] = [];
@@ -444,23 +557,26 @@
                 console.warn("[MainWindow] Failed to apply collected drop:", drop, error);
             }
         }
-        const appliedHookEventIds: string[] = [];
+        const processedHookEventIds: string[] = [];
+        let hookProcessingFailed = false;
         for (const [index, drop] of hookEvents.entries()) {
             try {
                 const result = recordCollectedDrop(drop, holyGrailItems);
+                const eventId = hookDrops?.eventIds[index];
+                if (eventId) processedHookEventIds.push(eventId);
                 if (result.applied) {
                     applied += 1;
-                    const eventId = hookDrops?.eventIds[index];
-                    if (eventId) appliedHookEventIds.push(eventId);
                 }
                 if (result.newGrailNotification) newGrailNotifications.push(result.newGrailNotification);
             } catch (error) {
+                hookProcessingFailed = true;
                 console.warn("[MainWindow] Failed to apply hook drop:", drop, error);
             }
         }
-        if (appliedHookEventIds.length) {
-            settingsStore.addProcessedHookDropIds(appliedHookEventIds);
+        if (processedHookEventIds.length) {
+            settingsStore.addProcessedHookDropIds(processedHookEventIds);
         }
+        await advanceHookDropCursorIfClean(hookDrops, hookProcessingFailed);
 
         if (applied > 0) {
             await emit("holy-grail-found-updated", JSON.parse(JSON.stringify(settingsStore.settings.holyGrailFound)));
@@ -474,8 +590,18 @@
         return applied;
     }
 
+    function delay(ms: number): Promise<void> {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
     async function syncEverything(): Promise<void> {
-        if (masterSyncing) return;
+        if (masterSyncing || quietSyncBusy) return;
+        if (quietSyncTimer) {
+            clearTimeout(quietSyncTimer);
+            quietSyncTimer = null;
+        }
+        quietSyncSources.clear();
+        quietSyncPending = false;
         masterSyncing = true;
         const failed: string[] = [];
 
@@ -520,25 +646,26 @@
             }
         } finally {
             masterSyncing = false;
+            if (quietSyncSources.size > 0 && !quietSyncTimer) {
+                armQuietSyncTimer();
+            }
         }
     }
 
     async function syncFromQuietTrigger(sources: string[] = []): Promise<void> {
-        if (quietSyncBusy || masterSyncing) return;
+        if (quietSyncBusy || masterSyncing) {
+            for (const source of sources) quietSyncSources.add(source);
+            quietSyncPending = quietSyncSources.size > 0;
+            return;
+        }
         quietSyncBusy = true;
         const label = sources.length > 0 ? sources.join(", ") : "quiet trigger";
         try {
             await flushCollectedDrops(label);
-            try {
-                const result = await invoke<RuneStashSyncResult>("sync_shared_stash_runes", {
-                    stashPath: settingsStore.settings.runewordPlannerStashPath,
-                });
-                settingsStore.setFateCardCounts(result.fate_card_counts ?? {});
-                await emit("master-shared-stash-synced", result);
-            } catch (error) {
-                console.warn(`[MainWindow] ${label} shared-stash sync failed:`, error);
+            if (sources.includes("save-exit")) {
+                await delay(SAVE_EXIT_LATE_HOOK_PASS_MS);
+                await flushCollectedDrops(`${label} late hook pass`);
             }
-
             try {
                 const result = await invoke<AccountStatsSyncResult>("sync_accountstats_stash", {
                     stashPath: settingsStore.settings.runewordPlannerStashPath,
@@ -546,15 +673,6 @@
                 mergeAccountStatsSyncResult(result);
             } catch (error) {
                 console.warn(`[MainWindow] ${label} account-stats sync failed:`, error);
-            }
-
-            try {
-                const result = await invoke<CharacterLevelSyncResult>("sync_character_levels", {
-                    stashPath: settingsStore.settings.runewordPlannerStashPath,
-                });
-                applyCharacterLevelSyncResult(result);
-            } catch (error) {
-                console.warn(`[MainWindow] ${label} character-level sync failed:`, error);
             }
         } finally {
             evaluateAchievementUnlocks();
@@ -567,7 +685,7 @@
     }
 
     function isPriorityQuietSyncSource(source: string): boolean {
-        return source === "save-exit" || source === "save-folder";
+        return source === "save-exit";
     }
 
     function armQuietSyncTimer(): void {
@@ -577,19 +695,23 @@
         const now = Date.now();
         if (!hasPrioritySource && lastQuietSyncAtMs > 0 && now - lastQuietSyncAtMs < QUIET_SYNC_COOLDOWN_MS) {
             quietSyncSources.clear();
+            quietSyncPending = false;
             return;
         }
 
+        quietSyncPending = true;
         quietSyncTimer = setTimeout(() => {
             const pendingSources = [...quietSyncSources];
             quietSyncSources.clear();
             quietSyncTimer = null;
+            quietSyncPending = false;
             void syncFromQuietTrigger(pendingSources);
-        }, hasPrioritySource ? QUIET_SYNC_DEBOUNCE_MS : QUIET_SYNC_DEBOUNCE_MS);
+        }, hasPrioritySource ? SAVE_EXIT_SYNC_DEBOUNCE_MS : QUIET_SYNC_DEBOUNCE_MS);
     }
 
     function scheduleQuietSync(source: string): void {
         quietSyncSources.add(source);
+        quietSyncPending = true;
         armQuietSyncTimer();
     }
 
@@ -670,14 +792,6 @@
             handleAccountStatsUpdate(event.payload);
         }).then((u) => unlisteners.push(u));
 
-        listen("save-folder-changed", () => {
-            scheduleQuietSync("save-folder");
-        }).then((u) => unlisteners.push(u));
-
-        listen("zone-transition-sync-requested", () => {
-            scheduleQuietSync("zone-transition");
-        }).then((u) => unlisteners.push(u));
-
         const window = getCurrentWebviewWindow();
         window.onCloseRequested(async () => {
             await saveWindowState();
@@ -693,6 +807,7 @@
 
         return () => {
             if (quietSyncTimer) clearTimeout(quietSyncTimer);
+            if (saveExitSyncTimer) clearTimeout(saveExitSyncTimer);
             if (saveTimeout) clearTimeout(saveTimeout);
             unlisteners.forEach((u) => u());
             itemsDictionaryStore.destroy();
@@ -711,12 +826,18 @@
             <div class="master-sync">
                 <button
                     class="sync-card"
+                    class:syncing={syncUiActive}
+                    class:queued={quietSyncPending && !syncUiActive}
                     type="button"
-                    disabled={masterSyncing}
-                    title="Sync shared stash, Fate Cards, account stats, and character levels"
+                    disabled={syncUiActive}
+                    aria-busy={syncUiActive}
+                    title={syncUiActive ? "SoE Companion is syncing data" : "Sync shared stash, Fate Cards, account stats, and character levels"}
                     onclick={syncEverything}
                 >
-                    <strong>{masterSyncing ? "Syncing" : "Sync All"}</strong>
+                    {#if syncUiActive}
+                        <span class="sync-spinner" aria-hidden="true"></span>
+                    {/if}
+                    <strong>{syncUiLabel}</strong>
                 </button>
             </div>
 
@@ -855,7 +976,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        min-width: 96px;
+        gap: 7px;
+        min-width: 116px;
         height: 36px;
         padding: 0 var(--space-3);
         border: 1px solid #f8d36a;
@@ -875,7 +997,30 @@
 
     .sync-card:disabled {
         cursor: wait;
-        opacity: 0.7;
+        opacity: 1;
+    }
+
+    .sync-card.syncing {
+        border-color: #fff0a8;
+        background: linear-gradient(180deg, #fff0a8 0%, #f0bd36 100%);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 0 18px rgba(255, 202, 72, 0.36);
+        animation: sync-pulse 1.1s ease-in-out infinite;
+    }
+
+    .sync-card.queued {
+        border-color: #ffd978;
+        background: linear-gradient(180deg, #ffe08a 0%, #eba638 100%);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 0 12px rgba(255, 178, 42, 0.22);
+    }
+
+    .sync-spinner {
+        width: 13px;
+        height: 13px;
+        border: 2px solid rgba(0, 0, 0, 0.24);
+        border-top-color: #000;
+        border-radius: 50%;
+        flex: 0 0 auto;
+        animation: sync-spin 0.75s linear infinite;
     }
 
     .sync-card strong {
@@ -885,6 +1030,21 @@
         line-height: 1;
         text-transform: uppercase;
         letter-spacing: 0;
+    }
+
+    @keyframes sync-spin {
+        to {
+            transform: rotate(360deg);
+        }
+    }
+
+    @keyframes sync-pulse {
+        0%, 100% {
+            filter: brightness(1);
+        }
+        50% {
+            filter: brightness(1.12);
+        }
     }
 
     .donate-card {

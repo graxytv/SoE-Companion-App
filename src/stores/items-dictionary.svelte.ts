@@ -5,6 +5,7 @@ type Source = 'empty' | 'cache' | 'live';
 
 export interface ItemsDictionary {
   base_types: string[];
+  base_code_names?: Record<string, string>;
   uniques_tu: string[];
   uniques_su: string[];
   uniques_ssu: string[];
@@ -22,6 +23,7 @@ export interface AutocompleteOption {
 function emptyDict(): ItemsDictionary {
   return {
     base_types: [],
+    base_code_names: {},
     uniques_tu: [],
     uniques_su: [],
     uniques_ssu: [],

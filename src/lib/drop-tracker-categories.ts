@@ -28,11 +28,10 @@ export const DROP_TRACKER_CATEGORIES = [
   { key: "unique", label: "Unique" },
   { key: "hellforged", label: "Hellforged" },
   { key: "sets", label: "Set Item" },
-  { key: "rare", label: "Rare" },
-  { key: "magic", label: "Magic" },
   { key: "lowRune", label: "Low Rune" },
   { key: "midRune", label: "Mid Rune" },
   { key: "highRune", label: "High Rune" },
+  { key: "runewords", label: "Runeword" },
   { key: "charm", label: "Charm" },
   { key: "jewel", label: "Jewel" },
   { key: "perfectGem", label: "Perfect Gem" },
@@ -60,6 +59,8 @@ export interface DropTrackerItemLike {
   quality?: string | null;
   is_hellforged?: boolean | null;
   isHellforged?: boolean | null;
+  is_runeword?: boolean | null;
+  isRuneword?: boolean | null;
   is_relic?: boolean | null;
   isRelic?: boolean | null;
 }
@@ -179,6 +180,7 @@ export function defaultDropsTrackerCategories(): DropTrackerCategorySettings {
       category.key === "unique" ||
         category.key === "hellforged" ||
         category.key === "sets" ||
+        category.key === "runewords" ||
         category.key === "fateCard",
     ]),
   ) as DropTrackerCategorySettings;
@@ -244,8 +246,9 @@ export function categorizeDrop(
   }
 
   if (quality === "set") categories.push("sets");
-  if (quality === "rare") categories.push("rare");
-  if (quality === "magic") categories.push("magic");
+  if (item.is_runeword === true || item.isRuneword === true || quality === "runeword") {
+    categories.push("runewords");
+  }
 
   const rune = runeNameFromDrop(item);
   if (rune) categories.push(runeCategory(rune));

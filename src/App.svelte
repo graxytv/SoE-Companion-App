@@ -23,6 +23,9 @@
 
   let windowType = $state<WindowType>(null);
   let isReady = $state(false);
+  let startupStep = $state('Starting');
+  let startupError = $state<string | null>(null);
+  let showStartupFallback = $state(false);
   let overlayLayoutEditing = $state(false);
   let overlayEditorWindowsHidden = false;
 
@@ -79,6 +82,12 @@
               ? 'tracker-card-overlay'
               : 'main';
     windowType = resolvedWindowType;
+    if (windowType !== 'main') {
+      showStartupFallback = true;
+    }
+    const startupFallbackTimer = window.setTimeout(() => {
+      showStartupFallback = true;
+    }, 1200);
 
     // Add class to html element for overlay styling
     if (windowType === 'overlay') {
@@ -112,12 +121,27 @@
       e.preventDefault();
     });
 
-    // Load settings from backend (applies theme automatically)
-    await settingsStore.load();
+    try {
+      // Load settings from backend (applies theme automatically).
+      startupStep = 'Loading settings';
+      await settingsStore.load();
+    } catch (err) {
+      startupError = err instanceof Error ? err.message : String(err);
+      console.error('[App] Failed during startup settings load:', err);
+    } finally {
+      isReady = true;
+      startupStep = startupError ? 'Loaded with fallback settings' : 'Ready';
+      window.clearTimeout(startupFallbackTimer);
+    }
+
     // Cross-window sync: each webview has its own store instance, so without
     // this a change in one window would be clobbered by a stale save from the other.
-    await settingsStore.initSync();
-    isReady = true;
+    // Do not block window rendering on this listener; a failed listener should
+    // never leave utility windows as a black native shell.
+    settingsStore.initSync().catch((err) => {
+      startupError = err instanceof Error ? err.message : String(err);
+      console.error('[App] Failed to initialize settings sync:', err);
+    });
 
     const unlistenEditMode = await listen<{ active: boolean }>('overlay-edit-mode', (event) => {
       overlayLayoutEditing = event.payload.active;
@@ -148,4 +172,46 @@
   <TrackerOverlayCardWindow />
 {:else if isReady && windowType === 'main'}
   <MainWindow />
+{:else if showStartupFallback}
+  <div class="startup-fallback" class:utility={windowType !== 'main'}>
+    <strong>SoE Companion</strong>
+    <span>{windowType === 'tracker-overlay' ? 'Loading tracker overlay...' : 'Loading window...'}</span>
+    <small>{startupError ?? startupStep}</small>
+  </div>
 {/if}
+
+<style>
+  .startup-fallback {
+    min-height: 100vh;
+    box-sizing: border-box;
+    display: grid;
+    place-content: center;
+    gap: 8px;
+    padding: 20px;
+    background: var(--bg-primary, #080303);
+    color: var(--text-primary, #f6e7c4);
+    font-family: var(--font-body, system-ui, sans-serif);
+    text-align: center;
+  }
+
+  .startup-fallback.utility {
+    background: #050303;
+  }
+
+  .startup-fallback strong {
+    color: var(--accent-gold, #ffb02e);
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+
+  .startup-fallback span {
+    color: var(--text-primary, #f6e7c4);
+    font-weight: 700;
+  }
+
+  .startup-fallback small {
+    max-width: 320px;
+    color: var(--text-muted, #b48b69);
+    overflow-wrap: anywhere;
+  }
+</style>

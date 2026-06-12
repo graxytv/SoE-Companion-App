@@ -208,8 +208,24 @@ let canonicalItemsByCategoryAndName: Map<string, HolyGrailItem> | null = null;
 let canonicalItemsByCategory: Map<HolyGrailCategoryKey, HolyGrailItem[]> | null = null;
 
 const HOLY_GRAIL_ITEM_ALIASES: Record<string, readonly string[]> = {
+  "Aldur's Gauntlet": ["Aldur's Rhythm"],
+  "Cow King's Hoofs": ["Cow King's Hooves"],
+  "Griswolds's Redemption": ["Griswold's Redemption"],
+  "Haemosu's Adament": ["Haemosu's Adamant"],
   "Horadrim Almanac": ["Horadric Almanac"],
   "Horadrim Navigator": ["Horadric Navigator"],
+  "Heaven's Taebaek": ["Taebaek's Glory"],
+  "Hwanin's Seal": ["Hwanin's Blessing"],
+  "Infernal Spire": ["Infernal Spike"],
+  "Sander's Paragon": ["McAuley's Paragon"],
+  "Sander's Riprap": ["McAuley's Riprap"],
+  "Sander's Taboo": ["McAuley's Taboo"],
+  "Sander's Superstition": ["McAuley's Superstition"],
+  "Spiritual Custodian": ["Dark Adherent"],
+  "Tal Rasha's Fire-Spun Cloth": ["Tal Rasha's Fine-Spun Cloth", "Tal Rasha's Belt"],
+  "Tal Rasha's Howling Wind": ["Tal Rasha's Guardianship", "Tal Rasha's Armor"],
+  "Sage's Defiance": ["Sages Defiance"],
+  "Wihtstan's Guard": ["Whitstan's Guard"],
   "Worldstone Shard": ["World Stone Shard", "World Stone Shards"],
 };
 
@@ -217,6 +233,7 @@ const CODE_ONLY_GRAIL_UNIQUES: Record<string, string> = {
   rtp: "Horadrim Navigator",
   rid: "Horadrim Almanac",
   rkey: "Skeleton Key",
+  uhl: "Sage's Defiance",
 };
 
 let unambiguousUniqueGrailItemsByCategoryAndCode: Map<string, HolyGrailItem | null> | null = null;
@@ -234,6 +251,12 @@ function itemLooksHellforged(item: HolyGrailItemLike): boolean {
     item.isHellforged === true ||
     /\bhellforged\b/i.test(String(item.name ?? "")) ||
     /\bhellforged\b/i.test(String(item.canonical_name ?? item.canonicalName ?? ""));
+}
+
+function itemLooksRuneword(item: HolyGrailItemLike): boolean {
+  return item.is_runeword === true ||
+    item.isRuneword === true ||
+    String(item.quality ?? "").trim().toLowerCase() === "runeword";
 }
 
 function uniqueGrailCodeLookup(): Map<string, HolyGrailItem | null> {
@@ -453,7 +476,7 @@ export function inferHolyGrailCategory(
   if (codeOnlyGrailUnique(item)) return "su";
   if (codeOnlyRune(item)) return "runes";
   if (codeOnlyFateCard(item)) return "fateCards";
-  if (item.is_runeword === true || item.isRuneword === true) return "runewords";
+  if (itemLooksRuneword(item)) return "runewords";
   const quality = (item.quality ?? "").toLowerCase();
   if (quality === "runeword") return "runewords";
   if (quality === "set") return "sets";
@@ -494,15 +517,27 @@ export function holyGrailItemFromDrop(
   if (soe13GrailByCode) return soe13GrailByCode;
 
   const category = inferHolyGrailCategory(item);
-  const name = cleanTrackedItemName(
-    item.canonical_name ||
-    item.canonicalName ||
-    item.name ||
-    item.base_name ||
-    item.baseName ||
-    "",
-  );
-  return canonicalHolyGrailItem(category, name);
+  const candidates = itemLooksRuneword(item)
+    ? [
+        item.name,
+        item.canonical_name,
+        item.canonicalName,
+        item.base_name,
+        item.baseName,
+      ]
+    : [
+        item.canonical_name,
+        item.canonicalName,
+        item.name,
+        item.base_name,
+        item.baseName,
+      ];
+
+  for (const candidate of candidates) {
+    const match = canonicalHolyGrailItem(category, cleanTrackedItemName(candidate));
+    if (match) return match;
+  }
+  return null;
 }
 
 export function holyGrailProgress(

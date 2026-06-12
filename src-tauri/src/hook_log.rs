@@ -1,13 +1,20 @@
-use std::collections::HashSet;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::collections::{HashMap, HashSet};
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
 use crate::notifier::ItemDropEvent;
 
 const HOOK_DROP_LOG_PATH: &str = r"C:\soe_companion_drops.log";
+
+const RUNE_NAMES: &[&str] = &[
+    "El", "Eld", "Tir", "Nef", "Eth", "Ith", "Tal", "Ral", "Ort", "Thul", "Amn", "Sol",
+    "Shael", "Dol", "Hel", "Io", "Lum", "Ko", "Fal", "Lem", "Pul", "Um", "Mal", "Ist",
+    "Gul", "Vex", "Ohm", "Lo", "Sur", "Ber", "Jah", "Cham", "Zod",
+];
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +25,18 @@ pub struct HookDropEventsResult {
     pub lines_read: usize,
     pub skipped_processed: usize,
     pub parse_errors: usize,
+    pub cursor_before: u64,
+    pub cursor_after: u64,
+    pub log_length: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookDropCompactResult {
+    pub log_path: String,
+    pub old_length: u64,
+    pub new_length: u64,
+    pub compacted: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -80,6 +99,77 @@ fn clean(value: Option<String>) -> String {
     value.unwrap_or_default().trim().to_string()
 }
 
+fn normalized_tracker_name(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['\u{2018}', '\u{2019}'], "'")
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn runeword_name_lookup() -> &'static HashMap<String, String> {
+    static LOOKUP: OnceLock<HashMap<String, String>> = OnceLock::new();
+    LOOKUP.get_or_init(|| {
+        let raw = include_str!("../../src/lib/data/soe-runewords.json");
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+            return HashMap::new();
+        };
+        let Some(rows) = value.as_array() else {
+            return HashMap::new();
+        };
+
+        let mut lookup = HashMap::new();
+        for row in rows {
+            let display_name = row
+                .get("displayName")
+                .and_then(|value| value.as_str())
+                .or_else(|| row.get("runewordName").and_then(|value| value.as_str()))
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let Some(canonical) = display_name else {
+                continue;
+            };
+
+            for key in ["displayName", "runewordName", "name"] {
+                if let Some(alias) = row
+                    .get(key)
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                {
+                    let normalized = normalized_tracker_name(alias);
+                    if !normalized.is_empty() {
+                        lookup.insert(normalized, canonical.to_string());
+                    }
+                }
+            }
+        }
+        lookup
+    })
+}
+
+fn runeword_name_from_text(value: &str) -> Option<String> {
+    let lookup = runeword_name_lookup();
+    for line in value.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if let Some(name) = lookup.get(&normalized_tracker_name(line)) {
+            return Some(name.clone());
+        }
+    }
+    lookup.get(&normalized_tracker_name(value)).cloned()
+}
+
+fn rune_name_from_code(code: &str) -> Option<&'static str> {
+    let code = code.trim().to_ascii_lowercase();
+    let suffix = code.strip_prefix('r')?;
+    let index = suffix.parse::<usize>().ok()?.checked_sub(1)?;
+    RUNE_NAMES.get(index).copied()
+}
+
 fn hook_event_id(line: &HookDropLogLine, raw_line: &str) -> String {
     if let Some(id) = line
         .event_id
@@ -104,12 +194,33 @@ fn hook_event_id(line: &HookDropLogLine, raw_line: &str) -> String {
 
 fn into_item_drop(line: HookDropLogLine) -> ItemDropEvent {
     let item_code = clean(line.item_code);
-    let quality = clean(line.quality).if_empty("Normal");
-    let name = clean(line.name).if_empty(if item_code.is_empty() {
+    let mut quality = clean(line.quality).if_empty("Normal");
+    let mut name = clean(line.name).if_empty(if item_code.is_empty() {
         "Unknown item"
     } else {
         item_code.as_str()
     });
+    let base_name = clean(line.base_name);
+    let mut canonical_name = clean(line.canonical_name);
+    let is_runeword =
+        line.is_runeword.unwrap_or(false) || quality.trim().eq_ignore_ascii_case("runeword");
+
+    if is_runeword {
+        let combined_name = format!("{name}\n{canonical_name}\n{base_name}");
+        if let Some(runeword_name) = runeword_name_from_text(&combined_name) {
+            name = runeword_name.clone();
+            canonical_name = runeword_name;
+            quality = "Runeword".to_string();
+        }
+    } else if let Some(rune_name) = rune_name_from_code(&item_code) {
+        let display_name = format!("{rune_name} Rune");
+        if name.trim().eq_ignore_ascii_case(&item_code) || name.trim().is_empty() {
+            name = display_name.clone();
+        }
+        if canonical_name.trim().is_empty() || canonical_name.trim().eq_ignore_ascii_case(&item_code) {
+            canonical_name = display_name;
+        }
+    }
 
     ItemDropEvent {
         unit_id: line.unit_id.unwrap_or(0),
@@ -117,8 +228,8 @@ fn into_item_drop(line: HookDropLogLine) -> ItemDropEvent {
         item_code,
         quality,
         name,
-        base_name: clean(line.base_name),
-        canonical_name: clean(line.canonical_name),
+        base_name,
+        canonical_name,
         category: line.category.and_then(|value| {
             let trimmed = value.trim().to_string();
             if trimmed.is_empty() { None } else { Some(trimmed) }
@@ -126,7 +237,7 @@ fn into_item_drop(line: HookDropLogLine) -> ItemDropEvent {
         stats: clean(line.stats),
         is_ethereal: line.is_ethereal.unwrap_or(false),
         is_identified: line.is_identified.unwrap_or(true),
-        is_runeword: line.is_runeword.unwrap_or(false),
+        is_runeword,
         p_unit_data: line.p_unit_data.unwrap_or(0),
         mode: line.mode.unwrap_or(3),
         file_index: line.file_index.unwrap_or(0),
@@ -157,7 +268,7 @@ impl IfEmpty for String {
 }
 
 #[tauri::command]
-pub fn read_hook_drop_events(processed_ids: Vec<String>) -> HookDropEventsResult {
+pub fn read_hook_drop_events(processed_ids: Vec<String>, cursor: Option<u64>) -> HookDropEventsResult {
     let path = PathBuf::from(HOOK_DROP_LOG_PATH);
     let processed: HashSet<String> = processed_ids
         .into_iter()
@@ -165,7 +276,7 @@ pub fn read_hook_drop_events(processed_ids: Vec<String>) -> HookDropEventsResult
         .filter(|id| !id.is_empty())
         .collect();
 
-    let file = match File::open(&path) {
+    let mut file = match File::open(&path) {
         Ok(file) => file,
         Err(_) => {
             return HookDropEventsResult {
@@ -175,17 +286,57 @@ pub fn read_hook_drop_events(processed_ids: Vec<String>) -> HookDropEventsResult
                 lines_read: 0,
                 skipped_processed: 0,
                 parse_errors: 0,
+                cursor_before: 0,
+                cursor_after: 0,
+                log_length: 0,
             };
         }
     };
+
+    let log_length = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let requested_cursor = cursor.unwrap_or(0);
+    let cursor_before = if requested_cursor > log_length {
+        0
+    } else {
+        requested_cursor
+    };
+    if file.seek(SeekFrom::Start(cursor_before)).is_err() {
+        return HookDropEventsResult {
+            log_path: path.display().to_string(),
+            events: Vec::new(),
+            event_ids: Vec::new(),
+            lines_read: 0,
+            skipped_processed: 0,
+            parse_errors: 0,
+            cursor_before: 0,
+            cursor_after: 0,
+            log_length,
+        };
+    }
 
     let mut events = Vec::new();
     let mut event_ids = Vec::new();
     let mut lines_read = 0usize;
     let mut skipped_processed = 0usize;
     let mut parse_errors = 0usize;
+    let mut cursor_after = cursor_before;
+    let mut reader = BufReader::new(file);
+    let mut raw_line = String::new();
 
-    for raw_line in BufReader::new(file).lines().map_while(Result::ok) {
+    loop {
+        raw_line.clear();
+        let line_start = cursor_after;
+        let bytes_read = match reader.read_line(&mut raw_line) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                parse_errors += 1;
+                break;
+            }
+        };
+        if bytes_read == 0 {
+            break;
+        }
+        cursor_after = cursor_after.saturating_add(bytes_read as u64);
         lines_read += 1;
         let trimmed = raw_line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -195,6 +346,10 @@ pub fn read_hook_drop_events(processed_ids: Vec<String>) -> HookDropEventsResult
         let parsed = match serde_json::from_str::<HookDropLogLine>(trimmed) {
             Ok(parsed) => parsed,
             Err(_) => {
+                if !raw_line.ends_with('\n') && cursor_after >= log_length {
+                    cursor_after = line_start;
+                    break;
+                }
                 parse_errors += 1;
                 continue;
             }
@@ -216,5 +371,92 @@ pub fn read_hook_drop_events(processed_ids: Vec<String>) -> HookDropEventsResult
         lines_read,
         skipped_processed,
         parse_errors,
+        cursor_before,
+        cursor_after,
+        log_length,
+    }
+}
+
+#[tauri::command]
+pub fn compact_hook_drop_log(cursor: u64) -> HookDropCompactResult {
+    let path = PathBuf::from(HOOK_DROP_LOG_PATH);
+    let log_path = path.display().to_string();
+    let old_length = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata.len(),
+        Err(_) => {
+            return HookDropCompactResult {
+                log_path,
+                old_length: 0,
+                new_length: 0,
+                compacted: false,
+            };
+        }
+    };
+
+    if cursor == 0 || cursor > old_length {
+        return HookDropCompactResult {
+            log_path,
+            old_length,
+            new_length: old_length,
+            compacted: false,
+        };
+    }
+
+    let mut file = match File::open(&path) {
+        Ok(file) => file,
+        Err(_) => {
+            return HookDropCompactResult {
+                log_path,
+                old_length,
+                new_length: old_length,
+                compacted: false,
+            };
+        }
+    };
+    if file.seek(SeekFrom::Start(cursor)).is_err() {
+        return HookDropCompactResult {
+            log_path,
+            old_length,
+            new_length: old_length,
+            compacted: false,
+        };
+    }
+
+    let mut tail = Vec::new();
+    if file.read_to_end(&mut tail).is_err() {
+        return HookDropCompactResult {
+            log_path,
+            old_length,
+            new_length: old_length,
+            compacted: false,
+        };
+    }
+    drop(file);
+
+    let mut writer = match OpenOptions::new().write(true).truncate(true).open(&path) {
+        Ok(file) => file,
+        Err(_) => {
+            return HookDropCompactResult {
+                log_path,
+                old_length,
+                new_length: old_length,
+                compacted: false,
+            };
+        }
+    };
+    if writer.write_all(&tail).and_then(|_| writer.flush()).is_err() {
+        return HookDropCompactResult {
+            log_path,
+            old_length,
+            new_length: old_length,
+            compacted: false,
+        };
+    }
+
+    HookDropCompactResult {
+        log_path,
+        old_length,
+        new_length: tail.len() as u64,
+        compacted: true,
     }
 }
