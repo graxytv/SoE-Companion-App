@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 use crate::notifier::ItemDropEvent;
 
 const HOOK_DROP_LOG_PATH: &str = r"C:\soe_companion_drops.log";
+const MAX_HOOK_LOG_INITIAL_TAIL_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_HOOK_LOG_READ_BYTES: u64 = 1024 * 1024;
+const MAX_HOOK_LOG_LINES_PER_SYNC: usize = 5_000;
+const MAX_HOOK_LOG_EVENTS_PER_SYNC: usize = 1_000;
 
 const RUNE_NAMES: &[&str] = &[
     "El", "Eld", "Tir", "Nef", "Eth", "Ith", "Tal", "Ral", "Ort", "Thul", "Amn", "Sol",
@@ -28,6 +32,8 @@ pub struct HookDropEventsResult {
     pub cursor_before: u64,
     pub cursor_after: u64,
     pub log_length: u64,
+    pub reached_limit: bool,
+    pub skipped_backlog_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -289,17 +295,30 @@ pub fn read_hook_drop_events(processed_ids: Vec<String>, cursor: Option<u64>) ->
                 cursor_before: 0,
                 cursor_after: 0,
                 log_length: 0,
+                reached_limit: false,
+                skipped_backlog_bytes: 0,
             };
         }
     };
 
     let log_length = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
     let requested_cursor = cursor.unwrap_or(0);
-    let cursor_before = if requested_cursor > log_length {
+    let mut cursor_before = if requested_cursor > log_length {
         0
     } else {
         requested_cursor
     };
+    let mut skipped_backlog_bytes = 0u64;
+    if cursor_before == 0 && log_length > MAX_HOOK_LOG_INITIAL_TAIL_BYTES {
+        let tail_start = log_length.saturating_sub(MAX_HOOK_LOG_INITIAL_TAIL_BYTES);
+        if file.seek(SeekFrom::Start(tail_start)).is_ok() {
+            let mut reader = BufReader::new(&file);
+            let mut partial = String::new();
+            let line_bytes = reader.read_line(&mut partial).unwrap_or(0) as u64;
+            cursor_before = tail_start.saturating_add(line_bytes).min(log_length);
+            skipped_backlog_bytes = cursor_before;
+        }
+    }
     if file.seek(SeekFrom::Start(cursor_before)).is_err() {
         return HookDropEventsResult {
             log_path: path.display().to_string(),
@@ -311,6 +330,8 @@ pub fn read_hook_drop_events(processed_ids: Vec<String>, cursor: Option<u64>) ->
             cursor_before: 0,
             cursor_after: 0,
             log_length,
+            reached_limit: false,
+            skipped_backlog_bytes,
         };
     }
 
@@ -322,8 +343,17 @@ pub fn read_hook_drop_events(processed_ids: Vec<String>, cursor: Option<u64>) ->
     let mut cursor_after = cursor_before;
     let mut reader = BufReader::new(file);
     let mut raw_line = String::new();
+    let mut reached_limit = false;
 
     loop {
+        if lines_read >= MAX_HOOK_LOG_LINES_PER_SYNC
+            || events.len() >= MAX_HOOK_LOG_EVENTS_PER_SYNC
+            || cursor_after.saturating_sub(cursor_before) >= MAX_HOOK_LOG_READ_BYTES
+        {
+            reached_limit = cursor_after < log_length;
+            break;
+        }
+
         raw_line.clear();
         let line_start = cursor_after;
         let bytes_read = match reader.read_line(&mut raw_line) {
@@ -374,6 +404,8 @@ pub fn read_hook_drop_events(processed_ids: Vec<String>, cursor: Option<u64>) ->
         cursor_before,
         cursor_after,
         log_length,
+        reached_limit,
+        skipped_backlog_bytes,
     }
 }
 

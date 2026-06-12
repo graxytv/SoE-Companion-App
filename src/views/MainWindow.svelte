@@ -228,6 +228,8 @@
         cursorBefore: number;
         cursorAfter: number;
         logLength: number;
+        reachedLimit?: boolean;
+        skippedBacklogBytes?: number;
     }
 
     interface HookDropCompactResult {
@@ -519,7 +521,7 @@
         if (
             !hookDrops ||
             hookProcessingFailed ||
-            hookDrops.cursorAfter <= hookDrops.cursorBefore
+            (hookDrops.cursorAfter <= hookDrops.cursorBefore && !hookDrops.skippedBacklogBytes)
         ) {
             return;
         }
@@ -538,6 +540,16 @@
         const hookDrops = await readHookLoggedDrops(reason);
         if (hookDrops?.parseErrors) {
             console.warn(`[MainWindow] Hook drop log had ${hookDrops.parseErrors} parse error(s):`, hookDrops.logPath);
+        }
+        if (hookDrops?.skippedBacklogBytes) {
+            console.warn(
+                `[MainWindow] Skipped ${(hookDrops.skippedBacklogBytes / 1024 / 1024).toFixed(1)} MB of old hook log backlog before ${reason}.`,
+            );
+        }
+        if (hookDrops?.reachedLimit) {
+            console.warn(
+                `[MainWindow] Hook drop sync hit a safety limit for ${reason}; remaining entries will be handled by a later sync.`,
+            );
         }
 
         const hookEvents = hookDrops?.events ?? [];

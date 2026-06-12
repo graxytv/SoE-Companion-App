@@ -744,7 +744,7 @@ class SettingsStore {
       seen.add(id);
       ids.push(id);
     }
-    return ids.slice(-5000);
+    return ids.slice(-1000);
   }
 
   private normalizeHookDropLogCursor(value: unknown): number {
