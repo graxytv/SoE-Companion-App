@@ -4,6 +4,8 @@
   import { Button, Toggle } from '.';
   import { settingsStore } from '../stores';
 
+  const IDENTIFIED_DROPS_AVAILABLE = false;
+
   interface DropHookStatus {
     projectD2Dir: string;
     dllPath: string;
@@ -196,16 +198,20 @@
       return 'Identified Drops are installed. SoE Hook tracking is off.';
     }
     if (dropHookStatus.grailInstalled) {
-      return 'SoE Hook tracking is installed. Identified Drops are off.';
+      return 'SoE Hook tracking is installed. Identified Drops are disabled in the safe hook build.';
     }
     if (dropHookStatus.installed) {
-      return 'Shared SoE hook is installed. Identified Drops are off.';
+      return 'Shared SoE hook is installed. Identified Drops are disabled in the safe hook build.';
     }
-    return 'Identified Drops are not installed.';
+    return 'Identified Drops are disabled in the safe hook build.';
   }
 </script>
 
 <div class="settings-section identified-drops-panel">
+  <div class="safety-note">
+    Identified Drops is paused for now. The old implementation wrote directly to item flags in game memory, and that is too risky after game patches. Drop tracking, grail tracking, overlays, and stash sorting still use the safe hook path.
+  </div>
+
   <div class="hook-card">
     <div class="hook-status">
       <span class="status-dot" class:active={dropHookStatus?.identifiedInstalled}></span>
@@ -215,7 +221,7 @@
       </div>
     </div>
     <div class="hook-actions">
-      <Button variant="primary" size="sm" disabled={identifiedDropsBusy || dropHookStatus?.identifiedInstalled} onclick={installIdentifiedDropsHook}>
+      <Button variant="primary" size="sm" disabled={identifiedDropsBusy || dropHookStatus?.identifiedInstalled || !IDENTIFIED_DROPS_AVAILABLE} onclick={installIdentifiedDropsHook}>
         {dropHookStatus?.identifiedInstalled ? 'Installed' : 'Install Identified Drops'}
       </Button>
       {#if dropHookStatus?.identifiedInstalled}
@@ -290,6 +296,16 @@
   .identified-drops-panel {
     display: grid;
     gap: 12px;
+  }
+
+  .safety-note {
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--warning, #f5a623) 65%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--warning, #f5a623) 14%, var(--bg-secondary));
+    color: var(--text-primary);
+    font-size: 13px;
+    line-height: 1.5;
   }
 
   .hook-card {

@@ -7,7 +7,8 @@ const DLL_NAME: &str = "ijl11.dll";
 const ORIGINAL_DLL_NAME: &str = "ijl11_orig.dll";
 const INI_NAME: &str = "DropIdentified.ini";
 const LOG_PATH: &str = r"C:\SoECompanion\logs\soe_companion_drops.log";
-const DROP_HOOK_VERSION: &str = "drop-events-v8";
+const DROP_HOOK_VERSION: &str = "drop-events-v10-safe";
+const DROP_IDENTIFIED_AVAILABLE: bool = false;
 
 const BUNDLED_DLL: &[u8] = include_bytes!("../resources/ijl11.dll");
 const BUNDLED_INI: &str = include_str!("../resources/DropIdentified.ini");
@@ -422,7 +423,7 @@ fn has_soe_hook_marker(ini: &Path) -> bool {
     };
     let auto_grail = parse_auto_grail_config(&contents);
     let identified = config_from_ini(&contents);
-    auto_grail.enabled.unwrap_or(false) || identified.enabled
+    auto_grail.enabled.unwrap_or(false) || (DROP_IDENTIFIED_AVAILABLE && identified.enabled)
 }
 
 fn install_shared_hook_dll(project_dir: &Path) -> Result<(), String> {
@@ -550,7 +551,8 @@ fn uninstall_shared_hook_dll(project_dir: &Path) -> Result<(), String> {
 
 fn uninstall_shared_hook_dll_if_unused(project_dir: &Path, ini: &Path) -> Result<(), String> {
     let auto_grail_enabled = read_auto_grail_enabled_from_path(ini)?.unwrap_or(false);
-    let identified_enabled = read_drop_identified_config_from_path(ini)?.enabled;
+    let identified_enabled =
+        DROP_IDENTIFIED_AVAILABLE && read_drop_identified_config_from_path(ini)?.enabled;
     if !auto_grail_enabled && !identified_enabled {
         uninstall_shared_hook_dll(project_dir)?;
     }
@@ -639,7 +641,7 @@ fn build_status(project_d2_dir: Option<String>, message: String) -> DropHookStat
     let dll_looks_managed = dll_exists && dll_looks_like_soe_hook(&dll);
     let ini_looks_managed = original.exists()
         && dll_exists
-        && (auto_grail_enabled || identified_config.enabled);
+        && (auto_grail_enabled || (DROP_IDENTIFIED_AVAILABLE && identified_config.enabled));
     let hook_version_matches = auto_grail_config
         .hook_version
         .as_deref()
@@ -651,7 +653,7 @@ fn build_status(project_d2_dir: Option<String>, message: String) -> DropHookStat
     let unknown_dll_present = dll_exists && original.exists() && !managed_hook_present;
     let can_restore_original =
         original.exists() && (!dll_exists || dll_matches_bundled || managed_hook_present);
-    let identified_installed = installed && identified_config.enabled;
+    let identified_installed = DROP_IDENTIFIED_AVAILABLE && installed && identified_config.enabled;
     let grail_installed = installed && auto_grail_enabled;
 
     DropHookStatus {
@@ -700,7 +702,7 @@ pub fn get_drop_hook_status_for_path(project_d2_dir: Option<String>) -> DropHook
         "Shared SoE Hook is installed. Companion tracking and Identified Drops are enabled."
             .to_string()
     } else if status.grail_installed {
-        "SoE Hook is installed. Identified Drops are off.".to_string()
+        "SoE Hook is installed. Identified Drops are disabled in the safe hook build.".to_string()
     } else if status.identified_installed {
         "Identified Drops are installed. Companion tracking is off.".to_string()
     } else if status.hook_needs_update {
@@ -769,7 +771,8 @@ pub fn install_auto_grail_hook_for_path(
         write_ini_with_drop_identified_config(&ini, &DropIdentifiedConfig::default())?;
     }
     write_ini_with_auto_grail_enabled(&ini, true)?;
-    let identified_enabled = read_drop_identified_config_from_path(&ini)?.enabled;
+    let identified_enabled =
+        DROP_IDENTIFIED_AVAILABLE && read_drop_identified_config_from_path(&ini)?.enabled;
 
     Ok(build_status(
         project_d2_dir,
@@ -797,6 +800,13 @@ pub fn install_auto_grail_hook_for_path(
 pub fn install_identified_drops_hook_for_path(
     project_d2_dir: Option<String>,
 ) -> Result<DropHookStatus, String> {
+    if !DROP_IDENTIFIED_AVAILABLE {
+        return Err(
+            "Identified Drops are disabled in this safe hook build because the old method wrote directly to game item flags and could corrupt visual state after game patches."
+                .to_string(),
+        );
+    }
+
     let project_dir = normalize_project_d2_dir(project_d2_dir.clone());
     if !project_dir.exists() {
         return Err(format!(
@@ -844,7 +854,8 @@ pub fn uninstall_auto_grail_hook_for_path(
     let ini = ini_path(&project_dir);
     write_ini_with_auto_grail_enabled(&ini, false)?;
     uninstall_shared_hook_dll_if_unused(&project_dir, &ini)?;
-    let identified_enabled = read_drop_identified_config_from_path(&ini)?.enabled;
+    let identified_enabled =
+        DROP_IDENTIFIED_AVAILABLE && read_drop_identified_config_from_path(&ini)?.enabled;
 
     Ok(build_status(
         project_d2_dir,
@@ -892,6 +903,10 @@ pub fn get_drop_identified_config() -> Result<DropIdentifiedConfig, String> {
 pub fn get_drop_identified_config_for_path(
     project_d2_dir: Option<String>,
 ) -> Result<DropIdentifiedConfig, String> {
+    if !DROP_IDENTIFIED_AVAILABLE {
+        return Ok(DropIdentifiedConfig::default());
+    }
+
     let project_dir = normalize_project_d2_dir(project_d2_dir);
     let ini = ini_path(&project_dir);
     read_drop_identified_config_from_path(&ini)
@@ -909,6 +924,13 @@ pub fn write_drop_identified_config_for_path(
     config: DropIdentifiedConfig,
     project_d2_dir: Option<String>,
 ) -> Result<DropIdentifiedConfig, String> {
+    if !DROP_IDENTIFIED_AVAILABLE && config.enabled {
+        return Err(
+            "Identified Drops are disabled in this safe hook build because the old method wrote directly to game item flags."
+                .to_string(),
+        );
+    }
+
     let project_dir = normalize_project_d2_dir(project_d2_dir.clone());
     if !project_dir.exists() {
         return Err(format!(

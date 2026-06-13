@@ -265,6 +265,7 @@
             holyGrailItems: buildHolyGrailItems(itemsDictionaryStore.dict),
             runeTrackerCounts: settingsStore.settings.runeTrackerCounts,
         });
+        scheduleQuietSync("save-exit");
     }
 
     interface RuneStashSyncResult {
@@ -903,11 +904,9 @@
             setGameStatus(status);
         });
 
-        // The ijl11.dll log only contains `name|quality` and can fire for
-        // non-drop item flag/name events. Keep the watcher alive for status
-        // and manual import, but do not treat live log appends as trusted
-        // drops. Live grail/tracker updates now come from the scanner path,
-        // which verifies ground-mode items and live tooltip names.
+        // The legacy grail log can fire for non-drop item flag/name events.
+        // Trusted drop imports now come from the structured hook log during
+        // Sync All / save-exit; do not treat this live grail append as a drop.
         listen<{ itemName: string; quality: string }>("grail-drop", (event) => {
             if (isGameEntryTrackingSuppressed()) return;
             console.debug("[MainWindow] Ignored live grail log entry", event.payload);

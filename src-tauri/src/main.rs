@@ -817,7 +817,6 @@ fn spawn_auto_scanner(
 ) {
     thread::spawn(move || {
         while should_auto_scan.load(Ordering::SeqCst) {
-            // If not currently scanning, check if D2 is running
             if !is_scanning.load(Ordering::SeqCst) && is_diablo2_running() {
                 start_scanner_internal(
                     is_scanning.clone(),
@@ -835,7 +834,6 @@ fn spawn_auto_scanner(
                 );
             }
 
-            // Check every 2 seconds
             thread::sleep(Duration::from_secs(2));
         }
     });
@@ -2397,9 +2395,9 @@ fn main() {
             let loot_history = state.loot_history.clone();
             app.manage(state);
 
-            // Calm sync model: the proven scanner still watches drops, but it queues
-            // them in memory so the frontend applies one quiet batch on Save & Exit
-            // or Sync All.
+            // Calm sync model: the scanner watches drops and queues them in
+            // memory; the hook log provides the authoritative drop feed for
+            // Save & Exit / Sync All imports.
             app.state::<AppState>().account_stats_watcher.start(app.handle().clone());
             spawn_auto_scanner(
                 is_scanning.clone(),
@@ -2580,6 +2578,7 @@ fn main() {
             settings::reset_achievement_progress,
             settings::write_stash_sorter_config,
             settings::read_stash_sorter_log_tail,
+            settings::capture_inventory_calibration_point,
             settings::get_window_state,
             settings::save_window_state,
             sounds::import_sound_file,

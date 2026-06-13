@@ -1,5 +1,5 @@
 /*
- * ijl11.dll — DropIdentified + Grail Drop Logger for SoE / Project Diablo 2
+ * ijl11.dll — SoE Companion drop logger + stash sorter for Project Diablo 2
  *
  * Build (MSYS2 MINGW64, 32-bit):
  *   cd /path/to/this/folder
@@ -9,12 +9,10 @@
  * Rename the original ijl11.dll to ijl11_orig.dll first.
  *
  * What it does:
- *   1. DropIdentified: intercepts SetItemFlag in D2Common.dll so magic/rare/set/unique
- *      items drop already identified (controlled by DropIdentified.ini).
- *   2. Grail Logger: when a unique or set item drops, looks up its name via
- *      D2Common.sgptDataTables -> UniqueItemsTxt / SetItemsTxt -> GetStringById
- *      and appends "ItemName|quality\n" to C:\SoECompanion\logs\grail_drops.log.
- *      The SoE Companion web tool can import this log to auto-check grail items.
+ *   1. Drop Logger: when items are created on the ground, writes structured
+ *      drop events to C:\SoECompanion\logs\soe_companion_drops.log.
+ *   2. Stash Sorter: reads player inventory on hotkey press and sends normal
+ *      mouse/keyboard input. It does not edit stash files.
  *
  * All offsets confirmed against SoE's actual D2Common.dll and D2Lang.dll (May 2026).
  */
@@ -30,6 +28,12 @@
 #include <stdlib.h>
 #include <string>
 #include <vector>
+
+// Production builds must stay narrow: proxy ijl11.dll, log item-created
+// events, and run the stash sorter. Experimental trace/render hooks and
+// direct item-flag writes are intentionally disabled because stale offsets in
+// those paths can corrupt unrelated game state after a patch.
+#define SOE_PRODUCTION_SAFE_HOOK 1
 
 static const char* SOE_COMPANION_ROOT_DIR = "C:\\SoECompanion";
 static const char* SOE_COMPANION_LOG_DIR = "C:\\SoECompanion\\logs";
@@ -106,15 +110,16 @@ extern "C" int __stdcall ijlWrite(void* props, int ioType)
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
-static bool g_dropIdMagic  = true;
-static bool g_dropIdRare   = true;
-static bool g_dropIdSet    = true;
-static bool g_dropIdUnique = true;
+static bool g_dropIdMagic  = false;
+static bool g_dropIdRare   = false;
+static bool g_dropIdSet    = false;
+static bool g_dropIdUnique = false;
 static bool g_dropIdSmallCharm = false;
 static bool g_dropIdLargeCharm = false;
 static bool g_dropIdGrandCharm = false;
 static void LoadConfig()
 {
+#ifdef SOE_ENABLE_UNSAFE_DROP_IDENTIFIED
     char path[MAX_PATH];
     GetModuleFileNameA(nullptr, path, MAX_PATH);
     char* slash = strrchr(path, '\\');
@@ -128,6 +133,15 @@ static void LoadConfig()
     g_dropIdSmallCharm = GetPrivateProfileIntA("DropIdentified", "SmallCharm", 0, path) != 0;
     g_dropIdLargeCharm = GetPrivateProfileIntA("DropIdentified", "LargeCharm", 0, path) != 0;
     g_dropIdGrandCharm = GetPrivateProfileIntA("DropIdentified", "GrandCharm", 0, path) != 0;
+#else
+    g_dropIdMagic = false;
+    g_dropIdRare = false;
+    g_dropIdSet = false;
+    g_dropIdUnique = false;
+    g_dropIdSmallCharm = false;
+    g_dropIdLargeCharm = false;
+    g_dropIdGrandCharm = false;
+#endif
 }
 
 // ── D2 type/offset definitions ────────────────────────────────────────────────
@@ -7560,7 +7574,9 @@ static volatile LONG g_spawnTraceD0320Count = 0;
 #endif
 #endif
 
-// Grail logger function pointers
+// Legacy grail-name lookup pointers. Production drop logging no longer calls
+// D2Lang/D2Common lookup functions inside the SetItemFlag hook; exact names
+// should be resolved by the app-side scanner/import pipeline instead.
 typedef const wchar_t* (__fastcall *FnGetStringById)(uint16_t nameId);
 static FnGetStringById g_GetStringById = nullptr;
 static uintptr_t*      g_ppDataTables  = nullptr;   // points to D2Common's sgptDataTables
@@ -7751,12 +7767,7 @@ static void AppendHookDropEvent(uintptr_t pUnit, uint32_t quality, uint32_t flag
     char itemCode[8] = {};
     ItemCodeToString(ItemCodeForUnit(pUnit), itemCode, sizeof(itemCode));
     char canonical[256] = {};
-    TryResolveUniqueSetItemName(pUnit, quality, canonical, sizeof(canonical));
-    if (forceRuneword) {
-        TryResolveItemDisplayName(pUnit, canonical, sizeof(canonical));
-    }
-
-    const char* displayName = canonical[0] ? canonical : (itemCode[0] ? itemCode : "Unknown item");
+    const char* displayName = itemCode[0] ? itemCode : "Unknown item";
     const char* qualityLabel = forceRuneword ? "Runeword" : QualityString(quality);
     char nameEsc[512] = {};
     char canonicalEsc[512] = {};
@@ -8361,12 +8372,20 @@ static bool IsSorterRuneCode(const char* code)
 static bool IsSorterMapCode(const char* code)
 {
     if (!code || code[0] != 't' || !isdigit((unsigned char)code[1])) return false;
-    if (isdigit((unsigned char)code[2]) && code[3] == '\0') {
-        int group = code[1] - '0';
-        int index = code[2] - '0';
+    char base[8] = {};
+    size_t len = strlen(code);
+    if (len >= sizeof(base)) return false;
+    memcpy(base, code, len + 1);
+    if (len > 0 && (base[len - 1] == 's' || base[len - 1] == 'S')) {
+        base[len - 1] = '\0';
+        len--;
+    }
+    if (len == 3 && isdigit((unsigned char)base[2])) {
+        int group = base[1] - '0';
+        int index = base[2] - '0';
         return group >= 1 && group <= 6 && index >= 1;
     }
-    if (code[1] == '3' && (code[2] == 'a' || code[2] == 'A' || code[2] == 'b' || code[2] == 'B') && code[3] == '\0') {
+    if (len == 3 && base[1] == '3' && (base[2] == 'a' || base[2] == 'A' || base[2] == 'b' || base[2] == 'B')) {
         return true;
     }
     return false;
@@ -8413,7 +8432,7 @@ static bool IsSorterGlyphCode(const char* code)
 static bool IsSorterChiselCode(const char* code)
 {
     static const char* const chiselCodes[] = {
-        "ccsl", "ccsa", "ccpr", "ccpl",
+        "ccs", "ccsl", "ccsa", "ccpr", "ccpl",
     };
     return CodeInListOrStacked(code, chiselCodes, sizeof(chiselCodes) / sizeof(chiselCodes[0]));
 }
@@ -8446,7 +8465,7 @@ static bool IsSorterBlockedMaterialTabCode(const char* code)
     static const char* const blockedCodes[] = {
         "troo", "troe", "tror", "troa",
         "scnm", "sccn", "scas", "scmo", "schr",
-        "ccsl", "ccsa", "ccpr", "ccpl",
+        "ccs", "ccsl", "ccsa", "ccpr", "ccpl",
         "toa",
         "oroh", "hfmx", "lsvl",
         "ascc", "assc",
@@ -8565,6 +8584,24 @@ static bool IsSorterKnownMaterialDisplayName(const char* displayName)
     return MaterialDisplayContainsAny(displayName, materialNames, sizeof(materialNames) / sizeof(materialNames[0]));
 }
 
+static bool IsSorterKnownMapDisplayName(const char* displayName)
+{
+    static const char* const mapNames[] = {
+        "torajan jungle", "horazon s memory", "bastion keep", "arreat battlefield",
+        "phlegethon", "ruined cistern", "lost temple", "halls of torture",
+        "royal crypts", "ruins of viz jun", "sanatorium", "ancestral trial",
+        "fall of caldeum", "shadows of westmarch", "demon road", "skovos stronghold",
+        "river of blood", "throne of insanity", "sewers of harrogath",
+        "tomb of zoltun kulle", "blood moon", "pandemonium citadel",
+        "canyon of sescheron", "kehjistan marketplace", "ashen plains", "kyovoshad",
+        "cathedral of light", "plains of torment", "sanctuary of sin",
+        "steppes of daken shar", "zhar s sanctum", "warlord of blood",
+        "fallen gardens", "imperial palace", "outer void", "city of ureh",
+        "djinn s domain", "na krul s abyss",
+    };
+    return MaterialDisplayContainsAny(displayName, mapNames, sizeof(mapNames) / sizeof(mapNames[0]));
+}
+
 static bool IsSorterCharmItem(const StashSorterCandidate& item)
 {
     return _stricmp(item.codeText, "cm1") == 0
@@ -8581,10 +8618,33 @@ static bool IsSorterJewelItem(const StashSorterCandidate& item)
         || NormalizedContains(item.displayName, "jewel");
 }
 
+static bool IsSorterHatredOrbItem(const StashSorterCandidate& item)
+{
+    return CodeStartsWith(item.codeText, "hor")
+        || NormalizedContains(item.displayName, "hatred orb")
+        || NormalizedContains(item.displayName, "hatred of equipment")
+        || NormalizedContains(item.displayName, "hatred of accessories")
+        || NormalizedContains(item.displayName, "hatred of essence")
+        || NormalizedContains(item.displayName, "hatred of essences")
+        || NormalizedContains(item.displayName, "hatred of fate card")
+        || NormalizedContains(item.displayName, "hatred of fate cards")
+        || NormalizedContains(item.displayName, "hatred of rune")
+        || NormalizedContains(item.displayName, "hatred of runes")
+        || NormalizedContains(item.displayName, "hatred of currency");
+}
+
 static bool IsSorterRunewordItem(const StashSorterCandidate& item)
 {
     return (item.flags & IFLAG_RUNEWORD) != 0
         || NormalizedContains(item.displayName, "runeword");
+}
+
+static bool IsSorterCindersoulClusterItem(const StashSorterCandidate& item)
+{
+    static const char* const clusterCodes[] = { "hfmx" };
+    return CodeInListOrStacked(item.codeText, clusterCodes, sizeof(clusterCodes) / sizeof(clusterCodes[0]))
+        || NormalizedContains(item.displayName, "cindersoul cluster")
+        || NormalizedContains(item.displayName, "cindersoul crystal");
 }
 
 static bool IsSorterNormalBaseQuality(uint32_t quality)
@@ -8604,6 +8664,7 @@ static bool IsSorterSpecialCatalogItem(const StashSorterCandidate& item)
         || IsSorterChiselCode(item.codeText)
         || IsSorterCharmItem(item)
         || IsSorterJewelItem(item)
+        || IsSorterCindersoulClusterItem(item)
         || NormalizedContains(item.displayName, "fate")
         || NormalizedContains(item.displayName, "essence")
         || NormalizedContains(item.displayName, "hatred orb")
@@ -8630,8 +8691,10 @@ static bool MatchesSorterCategory(const StashSorterCandidate& item, const char* 
 
     if (strcmp(cat, "runes") == 0) return IsSorterRuneCode(item.codeText);
     if (strcmp(cat, "maps") == 0) return IsSorterMapCode(item.codeText)
-        || NormalizedContains(item.displayName, " map");
+        || NormalizedContains(item.displayName, " map")
+        || IsSorterKnownMapDisplayName(item.displayName);
     if (strcmp(cat, "fatecards") == 0) {
+        if (IsSorterHatredOrbItem(item)) return false;
         return CodeStartsWith(item.codeText, "fa")
             || NormalizedContains(item.displayName, "fate")
             || NormalizedContains(item.displayName, "t0 fate")
@@ -8641,15 +8704,16 @@ static bool MatchesSorterCategory(const StashSorterCandidate& item, const char* 
             || NormalizedContains(item.displayName, "t4 fate")
             || NormalizedContains(item.displayName, "t5 fate");
     }
-    if (strcmp(cat, "essences") == 0) return CodeStartsWith(item.codeText, "es")
+    if (strcmp(cat, "essences") == 0) return !IsSorterHatredOrbItem(item) && (CodeStartsWith(item.codeText, "es")
         || NormalizedContains(item.displayName, "essence of")
         || NormalizedContains(item.displayName, "greater essence")
         || NormalizedContains(item.displayName, "perfect essence")
-        || NormalizedContains(item.displayName, "[essence]");
+        || NormalizedContains(item.displayName, "[essence]"));
     if (strcmp(cat, "glyphs") == 0) return IsSorterGlyphCode(item.codeText)
         || NormalizedContains(item.displayName, "glyph");
     if (strcmp(cat, "chisels") == 0) return IsSorterChiselCode(item.codeText)
         || NormalizedContains(item.displayName, "chisel");
+    if (strcmp(cat, "cindersoulclusters") == 0) return IsSorterCindersoulClusterItem(item);
     if (strcmp(cat, "uniques") == 0) return item.quality == QUALITY_UNIQUE;
     if (strcmp(cat, "sets") == 0) return item.quality == QUALITY_SET;
     if (strcmp(cat, "runewords") == 0) return IsSorterRunewordItem(item);
@@ -8658,8 +8722,7 @@ static bool MatchesSorterCategory(const StashSorterCandidate& item, const char* 
     if (strcmp(cat, "rareitems") == 0) return item.quality == QUALITY_RARE && !IsSorterCharmItem(item) && !IsSorterJewelItem(item);
     if (strcmp(cat, "charms") == 0) return IsSorterCharmItem(item);
     if (strcmp(cat, "jewels") == 0) return IsSorterJewelItem(item);
-    if (strcmp(cat, "hatredorbs") == 0) return CodeStartsWith(item.codeText, "hor")
-        || NormalizedContains(item.displayName, "hatred orb");
+    if (strcmp(cat, "hatredorbs") == 0) return IsSorterHatredOrbItem(item);
     if (strcmp(cat, "ascendancy") == 0) return CodeStartsWith(item.codeText, "as") || _stricmp(item.codeText, "ascc") == 0 || _stricmp(item.codeText, "assc") == 0;
 
     return false;
@@ -10000,7 +10063,9 @@ static void __stdcall HookSetItemFlag(uintptr_t pUnit, uint32_t flagMask, int en
     uint32_t quality = *(uint32_t*)(pItemData + ITEM_QUALITY);
     uint32_t flags   = *(uint32_t*)(pItemData + ITEM_FLAGS);
 
-    // Apply DropIdentified
+#ifdef SOE_ENABLE_UNSAFE_DROP_IDENTIFIED
+    // Disabled in production builds. This direct item-flag write is convenient,
+    // but it is too risky if game offsets drift after a patch.
     bool shouldId = false;
     if (quality == QUALITY_MAGIC  && g_dropIdMagic)  shouldId = true;
     if (quality == QUALITY_MAGIC  && IsConfiguredCharm(pUnit)) shouldId = true;
@@ -10009,14 +10074,13 @@ static void __stdcall HookSetItemFlag(uintptr_t pUnit, uint32_t flagMask, int en
     if (quality == QUALITY_UNIQUE && g_dropIdUnique)  shouldId = true;
 
     if (shouldId && !(flags & IFLAG_IDENTIFIED)) {
-        // Set the identified flag directly
-        DWORD oldProtect;
         void* flagAddr = (void*)(pItemData + ITEM_FLAGS);
         if (!IsBadWritePtr(flagAddr, 4)) {
             *(uint32_t*)flagAddr = flags | IFLAG_IDENTIFIED;
             flags |= IFLAG_IDENTIFIED;
         }
     }
+#endif
 
     // Grail log: only log when the initial creation flag is being set
     // (flagMask 0x80000 = the "item created" flag that fires exactly once)
@@ -10024,9 +10088,6 @@ static void __stdcall HookSetItemFlag(uintptr_t pUnit, uint32_t flagMask, int en
         const bool isRareOrMagic = quality == QUALITY_RARE || quality == QUALITY_MAGIC;
         if (!isRareOrMagic || IsCharmItem(pUnit)) {
             AppendHookDropEvent(pUnit, quality, flags, "drop", false);
-        }
-        if (quality == QUALITY_UNIQUE || quality == QUALITY_SET) {
-            TryLogItemName(pUnit, quality);
         }
     }
 
@@ -12315,7 +12376,6 @@ static DWORD WINAPI InstallThread(LPVOID)
     Sleep(3000);  // Wait for game DLLs to finish loading
 
     LoadConfig();
-    SetupGrailLogger();
     StartHookDropEventWriter();
     CreateThread(nullptr, 0, StashSorterHotkeyThread, nullptr, 0, nullptr);
 
@@ -12380,7 +12440,7 @@ static DWORD WINAPI InstallThread(LPVOID)
     CreateThread(nullptr, 0, NativeClientLeaveHotkeyThread, nullptr, 0, nullptr);
 #endif
 #endif
-#ifdef SOE_MATERIALS_TRACE
+#if defined(SOE_MATERIALS_TRACE) && !defined(SOE_PRODUCTION_SAFE_HOOK)
     InstallMaterialsTraceHooks();
     CreateThread(nullptr, 0, MaterialsTraceRetryThread, nullptr, 0, nullptr);
 #endif
@@ -12467,7 +12527,7 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
         }
 #endif
 #endif
-#ifdef SOE_MATERIALS_TRACE
+#if defined(SOE_MATERIALS_TRACE) && !defined(SOE_PRODUCTION_SAFE_HOOK)
         RemoveMaterialsTraceHooks();
 #endif
         if (g_orig) FreeLibrary(g_orig);

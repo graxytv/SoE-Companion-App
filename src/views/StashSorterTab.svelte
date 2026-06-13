@@ -13,12 +13,27 @@
     STASH_SORTER_MIN_SPEED,
     STASH_SORTER_SHARED_TAB_COUNT,
     defaultStashSorterBlacklist,
+    defaultStashSorterCalibration,
     defaultStashSorterProtectedCells,
     stashSorterCellKey,
     stashSorterCategoryLabel,
+    type StashSorterCalibration,
   } from '../lib/stash-sorter';
 
   type StashSorterSubTab = 'settings' | 'rules' | 'inventory-cells' | 'log';
+  type CalibrationCaptureKind = 'topLeft' | 'bottomRight';
+
+  interface CalibrationCapturePoint {
+    screenX: number;
+    screenY: number;
+    windowLeft: number;
+    windowTop: number;
+    windowRight: number;
+    windowBottom: number;
+    baseX: number;
+    baseY: number;
+    windowTitle: string;
+  }
 
   const UNBOUND: HotkeyConfig = { keyCode: 0, modifiers: 0, display: 'None' };
   const subTabs: Array<{ id: StashSorterSubTab; label: string }> = [
@@ -51,6 +66,10 @@
   let draftMatchValue = $state<string>(STASH_SORTER_CATEGORIES[0].key);
   let draftTargetTab = $state(1);
   let draftError = $state('');
+  let calibrationTopLeft = $state<CalibrationCapturePoint | null>(null);
+  let calibrationBottomRight = $state<CalibrationCapturePoint | null>(null);
+  let calibrationCaptureKind = $state<CalibrationCaptureKind | null>(null);
+  let calibrationStatus = $state('Open Diablo II with inventory visible, then capture the centers of cells 1,1 and 10,8.');
 
   let rules = $derived(settingsStore.settings.stashSorterRules);
   let lastRun = $derived(settingsStore.settings.stashSorterLastRun);
@@ -176,6 +195,73 @@
       GRID_ROWS.flatMap((y) => GRID_COLUMNS.map((x) => ({ x, y }))),
     );
     cellStatus = 'All inventory cells protected.';
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  function formatCalibrationNumber(value: number): string {
+    return Number.isFinite(value) ? value.toFixed(2) : '-';
+  }
+
+  function captureLabel(point: CalibrationCapturePoint | null): string {
+    if (!point) return 'Not captured';
+    return `${point.windowTitle || 'Window'} @ ${formatCalibrationNumber(point.baseX)},${formatCalibrationNumber(point.baseY)}`;
+  }
+
+  function applyCapturedCalibration(): void {
+    if (!calibrationTopLeft || !calibrationBottomRight) return;
+    const widthDelta = calibrationBottomRight.baseX - calibrationTopLeft.baseX;
+    const heightDelta = calibrationBottomRight.baseY - calibrationTopLeft.baseY;
+    if (widthDelta <= 20 || heightDelta <= 20) {
+      calibrationStatus = 'Calibration failed: capture cell 1,1 first, then cell 10,8.';
+      return;
+    }
+
+    const cellWidth = widthDelta / (STASH_SORTER_GRID_COLUMNS - 1);
+    const cellHeight = heightDelta / (STASH_SORTER_GRID_ROWS - 1);
+    const calibration: StashSorterCalibration = {
+      enabled: true,
+      left: calibrationTopLeft.baseX - cellWidth / 2,
+      top: calibrationTopLeft.baseY - cellHeight / 2,
+      cellWidth,
+      cellHeight,
+    };
+    settingsStore.setStashSorterCalibration(calibration);
+    cellStatus = `Calibration saved: left ${formatCalibrationNumber(calibration.left)}, top ${formatCalibrationNumber(calibration.top)}, cell ${formatCalibrationNumber(cellWidth)} x ${formatCalibrationNumber(cellHeight)}.`;
+    calibrationStatus = cellStatus;
+  }
+
+  async function captureCalibrationPoint(kind: CalibrationCaptureKind): Promise<void> {
+    if (calibrationCaptureKind) return;
+    calibrationCaptureKind = kind;
+    const label = kind === 'topLeft' ? 'cell 1,1' : 'cell 10,8';
+    try {
+      for (let seconds = 3; seconds > 0; seconds -= 1) {
+        calibrationStatus = `Move your mouse to the center of ${label}. Capturing in ${seconds}...`;
+        await sleep(1000);
+      }
+      const point = await invoke<CalibrationCapturePoint>('capture_inventory_calibration_point');
+      if (kind === 'topLeft') {
+        calibrationTopLeft = point;
+      } else {
+        calibrationBottomRight = point;
+      }
+      calibrationStatus = `Captured ${label} from ${point.windowTitle || 'detected window'}.`;
+      applyCapturedCalibration();
+    } catch (error) {
+      calibrationStatus = `Calibration capture failed: ${String(error)}`;
+    } finally {
+      calibrationCaptureKind = null;
+    }
+  }
+
+  function resetCalibration(): void {
+    calibrationTopLeft = null;
+    calibrationBottomRight = null;
+    settingsStore.setStashSorterCalibration(defaultStashSorterCalibration());
+    calibrationStatus = 'Calibration reset to default inventory grid values.';
   }
 
   function formatLastRun(): string {
@@ -424,6 +510,51 @@
         <span class="cell-summary">{allowedCount} allowed / {protectedCount} protected</span>
       </div>
 
+      <div class="calibration-card">
+        <div>
+          <h3>Inventory Grid Calibration</h3>
+          <p>Capture the center of the top-left inventory cell, then the center of the bottom-right inventory cell.</p>
+        </div>
+        <div class="calibration-values">
+          <span>Left <strong>{formatCalibrationNumber(settingsStore.settings.stashSorterCalibration.left)}</strong></span>
+          <span>Top <strong>{formatCalibrationNumber(settingsStore.settings.stashSorterCalibration.top)}</strong></span>
+          <span>
+            Cell
+            <strong>
+              {formatCalibrationNumber(settingsStore.settings.stashSorterCalibration.cellWidth)}
+              x
+              {formatCalibrationNumber(settingsStore.settings.stashSorterCalibration.cellHeight)}
+            </strong>
+          </span>
+        </div>
+        <div class="calibration-captures">
+          <span>Cell 1,1: <strong>{captureLabel(calibrationTopLeft)}</strong></span>
+          <span>Cell 10,8: <strong>{captureLabel(calibrationBottomRight)}</strong></span>
+        </div>
+        <div class="button-row">
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={calibrationCaptureKind !== null}
+            onclick={() => captureCalibrationPoint('topLeft')}
+          >
+            Capture Cell 1,1
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={calibrationCaptureKind !== null}
+            onclick={() => captureCalibrationPoint('bottomRight')}
+          >
+            Capture Cell 10,8
+          </Button>
+          <Button variant="secondary" size="sm" disabled={calibrationCaptureKind !== null} onclick={resetCalibration}>
+            Reset Calibration
+          </Button>
+        </div>
+        <p class="config-status">{calibrationStatus}</p>
+      </div>
+
       <div class="cell-actions">
         <Button variant="secondary" size="sm" onclick={allowAllCells}>Allow All Cells</Button>
         <Button variant="secondary" size="sm" onclick={protectDefaultCharmRows}>Protect Lower 4 Rows</Button>
@@ -616,6 +747,63 @@
 
   .setup-checklist.ready {
     color: var(--status-success-text);
+  }
+
+  .calibration-card {
+    display: grid;
+    gap: var(--space-3);
+    margin-top: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+  }
+
+  .calibration-card h3 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: var(--text-base);
+  }
+
+  .calibration-card p {
+    margin: var(--space-1) 0 0;
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+  }
+
+  .calibration-values,
+  .calibration-captures {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-2);
+  }
+
+  .calibration-captures {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .calibration-values span,
+  .calibration-captures span {
+    min-width: 0;
+    padding: var(--space-2);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    overflow-wrap: anywhere;
+  }
+
+  .calibration-values strong,
+  .calibration-captures strong {
+    color: var(--accent-gold);
+    font-family: var(--font-mono);
+  }
+
+  .button-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
   }
 
   .cell-actions {

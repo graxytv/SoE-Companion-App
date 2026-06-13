@@ -45,6 +45,7 @@ export const STASH_SORTER_CATEGORIES = [
   { key: 'glyphs', label: 'Glyphs' },
   { key: 'chisels', label: 'Chisels' },
   { key: 'maps', label: 'Maps' },
+  { key: 'cindersoul-clusters', label: 'Cindersoul Clusters' },
   { key: 'uniques', label: 'Uniques' },
   { key: 'sets', label: 'Sets' },
   { key: 'runewords', label: 'Runewords' },

@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -95,6 +96,48 @@ pub struct StashSorterCalibration {
 pub struct StashSorterProtectedCell {
     pub x: u32,
     pub y: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+struct WinPoint {
+    x: i32,
+    y: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+struct WinRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalibrationCapturePoint {
+    pub screen_x: i32,
+    pub screen_y: i32,
+    pub window_left: i32,
+    pub window_top: i32,
+    pub window_right: i32,
+    pub window_bottom: i32,
+    pub base_x: f64,
+    pub base_y: f64,
+    pub window_title: String,
+}
+
+type Hwnd = isize;
+const GA_ROOT: u32 = 2;
+
+#[link(name = "user32")]
+extern "system" {
+    fn GetCursorPos(lp_point: *mut WinPoint) -> i32;
+    fn WindowFromPoint(point: WinPoint) -> Hwnd;
+    fn GetAncestor(hwnd: Hwnd, flags: u32) -> Hwnd;
+    fn GetWindowRect(hwnd: Hwnd, rect: *mut WinRect) -> i32;
+    fn GetWindowTextA(hwnd: Hwnd, text: *mut c_char, max_count: i32) -> i32;
 }
 
 fn default_sounds() -> Vec<SoundSlot> {
@@ -1614,6 +1657,71 @@ fn normalize_stash_sorter_protected_cells(
         }
     }
     out
+}
+
+unsafe fn window_title(hwnd: Hwnd) -> String {
+    let mut buffer = [0 as c_char; 256];
+    let len = GetWindowTextA(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
+    if len <= 0 {
+        return "Unknown window".to_string();
+    }
+    let bytes = buffer[..len as usize]
+        .iter()
+        .map(|ch| *ch as u8)
+        .collect::<Vec<_>>();
+    String::from_utf8_lossy(&bytes).trim().to_string()
+}
+
+#[tauri::command]
+pub fn capture_inventory_calibration_point() -> Result<CalibrationCapturePoint, String> {
+    let mut point = WinPoint { x: 0, y: 0 };
+    unsafe {
+        if GetCursorPos(&mut point) == 0 {
+            return Err("Failed to read mouse position.".to_string());
+        }
+        let raw_hwnd = WindowFromPoint(point);
+        if raw_hwnd == 0 {
+            return Err("No window was found under the mouse cursor.".to_string());
+        }
+        let root_hwnd = GetAncestor(raw_hwnd, GA_ROOT);
+        let hwnd = if root_hwnd != 0 { root_hwnd } else { raw_hwnd };
+
+        let mut rect = WinRect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if GetWindowRect(hwnd, &mut rect) == 0 {
+            return Err("Failed to read the window under the mouse cursor.".to_string());
+        }
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width <= 100 || height <= 100 {
+            return Err("The window under the mouse cursor is too small to calibrate.".to_string());
+        }
+        if point.x < rect.left
+            || point.x >= rect.right
+            || point.y < rect.top
+            || point.y >= rect.bottom
+        {
+            return Err("Mouse cursor is outside the detected window.".to_string());
+        }
+
+        let base_x = ((point.x - rect.left) as f64) * 800.0 / (width as f64);
+        let base_y = ((point.y - rect.top) as f64) * 600.0 / (height as f64);
+        Ok(CalibrationCapturePoint {
+            screen_x: point.x,
+            screen_y: point.y,
+            window_left: rect.left,
+            window_top: rect.top,
+            window_right: rect.right,
+            window_bottom: rect.bottom,
+            base_x,
+            base_y,
+            window_title: window_title(hwnd),
+        })
+    }
 }
 
 #[tauri::command]

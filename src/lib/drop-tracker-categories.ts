@@ -252,13 +252,17 @@ export function categorizeDrop(
   const fateCardCodeIndex = fateCardCodeMatch ? Number.parseInt(fateCardCodeMatch[1], 10) - 1 : -1;
   const isFateCardCode = fateCardCodeIndex >= 0 && fateCardCodeIndex < SOE_13_FATE_CARD_ITEMS.length;
   const soe13CodeName = soe13ItemNameFromCode(itemCode) ?? "";
+  const isHatredOrb =
+    soe13ListContains(SOE_13_HATRED_ORB_ITEMS, name) ||
+    soe13ListContains(SOE_13_HATRED_ORB_ITEMS, soe13CodeName) ||
+    has(haystack, "hatred orb");
   if (has(haystack, "charm") || has(haystack, "annihilus") || has(haystack, "hellfire torch")) categories.push("charm");
   if (has(haystack, "jewel")) categories.push("jewel");
   if (has(haystack, "perfect") && has(haystack, "gem")) categories.push("perfectGem");
   if (has(haystack, "token")) categories.push("token");
-  if (isFateCardCode || soe13ListContains(SOE_13_FATE_CARD_ITEMS, name) || soe13ListContains(SOE_13_FATE_CARD_ITEMS, soe13CodeName) || has(haystack, "fate card")) categories.push("fateCard");
-  if (soe13ListContains(SOE_13_HATRED_ORB_ITEMS, name) || soe13ListContains(SOE_13_HATRED_ORB_ITEMS, soe13CodeName) || has(haystack, "hatred orb")) categories.push("hatredOrb");
-  if (isSoe13EssenceCode(itemCode) || soe13ListContains(SOE_13_ESSENCE_ITEMS, name) || soe13ListContains(SOE_13_ESSENCE_ITEMS, soe13CodeName) || /\b(?:greater\s+|perfect\s+)?essence\s+of\b/i.test(name)) categories.push("essence");
+  if (!isHatredOrb && (isFateCardCode || soe13ListContains(SOE_13_FATE_CARD_ITEMS, name) || soe13ListContains(SOE_13_FATE_CARD_ITEMS, soe13CodeName) || has(haystack, "fate card"))) categories.push("fateCard");
+  if (isHatredOrb) categories.push("hatredOrb");
+  if (!isHatredOrb && (isSoe13EssenceCode(itemCode) || soe13ListContains(SOE_13_ESSENCE_ITEMS, name) || soe13ListContains(SOE_13_ESSENCE_ITEMS, soe13CodeName) || /\b(?:greater\s+|perfect\s+)?essence\s+of\b/i.test(name))) categories.push("essence");
   if (soe13ListContains(SOE_13_ASCENDANCY_ITEMS, name) || soe13ListContains(SOE_13_ASCENDANCY_ITEMS, soe13CodeName) || has(haystack, "ascendancy") || has(haystack, "soulstone")) categories.push("ascendancy");
 
   return Array.from(new Set(categories));
