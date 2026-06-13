@@ -1,0 +1,166 @@
+SoE Companion Material Tab Whitelist Audit
+
+Purpose:
+This file separates two ideas that the app currently mixes together:
+1. Trackable materials: items SoE Companion can count, notify, or use for achievements.
+2. Materials-tab storage items: items the in-game Materials tab will actually accept.
+
+The stash sorter should only auto-route items to the Materials tab when they are in the confirmed Materials-tab storage whitelist.
+Everything else should follow explicit user rules or stay untouched.
+
+Current automatic Materials-tab logic in native/drop-hook-source/ijl11_grail.cpp:
+- Any rune code r01-r33, including stacked variants like r01s.
+- Any listed gem code, including stacked variants.
+- Any listed known material code, including stacked variants, excluding known non-material-tab families.
+- Any generic flp* stack wrapper whose display name contains one of the allowed material display strings.
+- Boss essence codes only: tes, ceh, bet, fed.
+
+High-risk broad display-name matches currently used by the hook:
+- rune
+- twisted essence
+- charged essence
+- burning essence
+- festering essence
+
+These broad display-name checks should not be trusted as the final Materials-tab whitelist.
+The hook now blocks terrors, glyphs, chisels, Token of Absolution, Hatred Orbs, and Ascendancy/Soulstone items from the automatic Materials Tab path.
+
+Current explicit codes the app thinks can auto-route to Materials tab:
+Category	Item name / meaning	Filter code	Current source	Whitelist status
+Rune	El Rune	r01 / r01s	Native rune pattern	Needs confirmation
+Rune	Eld Rune	r02 / r02s	Native rune pattern	Needs confirmation
+Rune	Tir Rune	r03 / r03s	Native rune pattern	Needs confirmation
+Rune	Nef Rune	r04 / r04s	Native rune pattern	Needs confirmation
+Rune	Eth Rune	r05 / r05s	Native rune pattern	Needs confirmation
+Rune	Ith Rune	r06 / r06s	Native rune pattern	Needs confirmation
+Rune	Tal Rune	r07 / r07s	Native rune pattern	Needs confirmation
+Rune	Ral Rune	r08 / r08s	Native rune pattern	Needs confirmation
+Rune	Ort Rune	r09 / r09s	Native rune pattern	Needs confirmation
+Rune	Thul Rune	r10 / r10s	Native rune pattern	Needs confirmation
+Rune	Amn Rune	r11 / r11s	Native rune pattern	Needs confirmation
+Rune	Sol Rune	r12 / r12s	Native rune pattern	Needs confirmation
+Rune	Shael Rune	r13 / r13s	Native rune pattern	Needs confirmation
+Rune	Dol Rune	r14 / r14s	Native rune pattern	Needs confirmation
+Rune	Hel Rune	r15 / r15s	Native rune pattern	Needs confirmation
+Rune	Io Rune	r16 / r16s	Native rune pattern	Needs confirmation
+Rune	Lum Rune	r17 / r17s	Native rune pattern	Needs confirmation
+Rune	Ko Rune	r18 / r18s	Native rune pattern	Needs confirmation
+Rune	Fal Rune	r19 / r19s	Native rune pattern	Needs confirmation
+Rune	Lem Rune	r20 / r20s	Native rune pattern	Needs confirmation
+Rune	Pul Rune	r21 / r21s	Native rune pattern	Needs confirmation
+Rune	Um Rune	r22 / r22s	Native rune pattern	Needs confirmation
+Rune	Mal Rune	r23 / r23s	Native rune pattern	Needs confirmation
+Rune	Ist Rune	r24 / r24s	Native rune pattern	Needs confirmation
+Rune	Gul Rune	r25 / r25s	Native rune pattern	Needs confirmation
+Rune	Vex Rune	r26 / r26s	Native rune pattern	Needs confirmation
+Rune	Ohm Rune	r27 / r27s	Native rune pattern	Needs confirmation
+Rune	Lo Rune	r28 / r28s	Native rune pattern	Needs confirmation
+Rune	Sur Rune	r29 / r29s	Native rune pattern	Needs confirmation
+Rune	Ber Rune	r30 / r30s	Native rune pattern	Needs confirmation
+Rune	Jah Rune	r31 / r31s	Native rune pattern	Needs confirmation
+Rune	Cham Rune	r32 / r32s	Native rune pattern	Needs confirmation
+Rune	Zod Rune	r33 / r33s	Native rune pattern	Needs confirmation
+Gem	Flawless Amethyst	gzv / gzvs	Native gem list	Needs confirmation
+Gem	Flawless Diamond	glw / glws	Native gem list	Needs confirmation
+Gem	Flawless Emerald	glg / glgs	Native gem list	Needs confirmation
+Gem	Flawless Ruby	glr / glrs	Native gem list	Needs confirmation
+Gem	Flawless Sapphire	glb / glbs	Native gem list	Needs confirmation
+Gem	Flawless Topaz	gly / glys	Native gem list	Needs confirmation
+Gem	Skull	skl / skls	Native gem list	Needs confirmation
+Gem	Perfect Amethyst	gpv / gpvs	Native gem list	Needs confirmation
+Gem	Perfect Diamond	gpw / gpws	Native gem list	Needs confirmation
+Gem	Perfect Emerald	gpg / gpgs	Native gem list	Needs confirmation
+Gem	Perfect Ruby	gpr / gprs	Native gem list	Needs confirmation
+Gem	Perfect Sapphire	gpb / gpbs	Native gem list	Needs confirmation
+Gem	Perfect Topaz	gpy / gpys	Native gem list	Needs confirmation
+Gem	Perfect Skull	skz / skzs	Native gem list	Needs confirmation
+Currency	Mythic Orb	mfo / mfos	Native code list + loot filter	Needs confirmation
+Currency	Divine Orb	dvo / dvos	Native code list + loot filter	Needs confirmation
+Currency	Sacred Orb	sor / sors	Native code list	Needs confirmation
+Currency	Exalted Orb	exo / exos	Native code list + loot filter	Needs confirmation
+Currency	UNKNOWN	sror / srors	Native code list + loot filter	Needs name confirmation
+Currency	Orb of Extraction	ooe / ooes	Native code list + loot filter	Needs confirmation
+Currency	Worldstone Shard	wss / wsss	Native code list + loot filter	Needs confirmation
+Currency	Tainted Worldstone Shard	cwss / cwsss	Native code list + loot filter	Needs confirmation
+Currency	Chaos Orb	csor / csors	SoE 13 code list + loot filter	Needs confirmation
+Currency	Eternal Orb	etor / etors	SoE 13 code list + loot filter	Needs confirmation
+Currency	Orb of Alchemy	ooal / ooals	SoE 13 code list + loot filter	Needs confirmation
+Currency	Orb of Horizons	oroh / orohs	SoE 13 code list + loot filter	NOT material-tab
+Currency	Cindersoul Cluster	hfmx / hfmxs	SoE 13 code list + loot filter	NOT material-tab
+Currency	Crystallised Cindersoul	hfcr / hfcrs	Native code list + loot filter	Confirmed material-tab
+Currency	Vial of Lightsong	lsvl / lsvls	SoE 13 code list + loot filter	NOT material-tab
+Currency	Orb of Chance	UNKNOWN	Local wiki cache; code not present in bundled filters	Confirmed material-tab by exact display-name match
+Currency	Chance Orb	UNKNOWN	User confirmation; code not present in bundled filters	Confirmed material-tab by exact display-name match
+Currency	Chance Shard	UNKNOWN	Local wiki cache; code not present in bundled filters	Confirmed material-tab by exact display-name match
+Currency	Infused Angelic Orb	UNKNOWN	User confirmation; code not present in bundled filters	Confirmed material-tab by exact display-name match
+Currency	Infused Zakarum Orb	UNKNOWN	User confirmation; code not present in bundled filters	Confirmed material-tab by exact display-name match
+Currency	Infused Horadrim Orb	UNKNOWN	Local wiki cache + user confirmation; code not present in bundled filters	Confirmed material-tab by exact display-name match
+Boss Material	Black Soulstone	dcbl / dcho / dcso group	Bundled loot filter boss material group	Confirmed material-tab
+Boss Material	Prime Evil Soul	dcbl / dcho / dcso group	Bundled loot filter boss material group	Confirmed material-tab
+Boss Material	Pure Demonic Essence	dcbl / dcho / dcso group	Bundled loot filter boss material group	Confirmed material-tab
+Boss Material	Trang-Oul's Jawbone	rtmo / rtmv / cm2f group	Bundled loot filter boss material group	Confirmed material-tab
+Boss Material	Splinter of the Void	rtmo / rtmv / cm2f group	Bundled loot filter boss material group	Confirmed material-tab
+Boss Material	Hellfire Ashes	rtmo / rtmv / cm2f group	Bundled loot filter boss material group	Confirmed material-tab
+Boss Material	Demonic Insignia	lucb / lucc / lucd group	Bundled loot filter boss material group	Confirmed material-tab
+Boss Material	Talisman of Transgression	lucb / lucc / lucd group	Bundled loot filter boss material group	Confirmed material-tab
+Boss Material	Flesh of Malic	lucb / lucc / lucd group	Bundled loot filter boss material group	Confirmed material-tab
+Utility Material	Demonic Cube	UNKNOWN	Local wiki cache; code not present in bundled filters	Confirmed material-tab by exact display-name match
+Utility Material	Larzuk's Puzzlebox	lbox / lboxs	Bundled loot filter	Confirmed material-tab
+Craft Infusion	Blood Craft Infusion	crfb / crfbs	Bundled loot filter	Confirmed material-tab
+Craft Infusion	Caster Craft Infusion	crfc / crfcs	Bundled loot filter	Confirmed material-tab
+Craft Infusion	Hitpower Craft Infusion	crfh / crfhs	Bundled loot filter	Confirmed material-tab
+Craft Infusion	Safety Craft Infusion	crfs / crfss	Bundled loot filter	Confirmed material-tab
+Craft Infusion	Vampiric Craft Infusion	crfv / crfvs	Bundled loot filter	Confirmed material-tab
+Craft Infusion	Bountiful Craft Infusion	crfu / crfus	Bundled loot filter	Confirmed material-tab
+Craft Infusion	Brilliant Craft Infusion	crfp / crfps	Bundled loot filter	Confirmed material-tab
+Crafting	Catalyst Shard	UNKNOWN	Local wiki cache; code not present in bundled filters	Confirmed material-tab by exact display-name match
+Terror	Terror of Resplendence	troo / troos	Native code list + loot filter	NOT material-tab
+Terror	Terror of Opulence	troe / troes	Native code list + loot filter	NOT material-tab
+Terror	Terror of Ethereal	tror / trors	Native code list + loot filter	NOT material-tab
+Terror	Terror of Absolute	troa / troas	Native code list + loot filter	NOT material-tab
+Sigil/Glyph	UNKNOWN	scnm / scnms	Native code list + loot filter	NOT material-tab
+Sigil/Glyph	UNKNOWN	sccn / sccns	Native code list + loot filter	NOT material-tab
+Sigil/Glyph	UNKNOWN	scas / scass	Native code list + loot filter	NOT material-tab
+Sigil/Glyph	UNKNOWN	scmo / scmos	Native code list + loot filter	NOT material-tab
+Sigil/Glyph	UNKNOWN	schr / schrs	Native code list + loot filter	NOT material-tab
+Chisel	Cartographer's Chisel	ccsl / ccsls	Raw Misc.txt	NOT material-tab
+Chisel	Cartographer's Chisel of Avarice	ccsa / ccsas	Native code list + loot filter	NOT material-tab
+Chisel	Cartographer's Chisel of Procurement	ccpr / ccprs	Native code list + loot filter	NOT material-tab
+Chisel	Cartographer's Chisel of Proliferation	ccpl / ccpls	Older raw Misc.txt defensive support	NOT material-tab
+Boss Essence	Token of Absolution	toa / toas	Native code list + loot filter	NOT material-tab
+Boss Essence	Twisted Essence of Suffering	tes / tess	Native code list + loot filter	Confirmed material-tab
+Boss Essence	Charged Essence of Hatred	ceh / cehs	Native code list + loot filter	Confirmed material-tab
+Boss Essence	Burning Essence of Terror	bet / bets	Native code list + loot filter	Confirmed material-tab
+Boss Essence	Festering Essence of Destruction	fed / feds	Native code list + loot filter	Confirmed material-tab
+Uber Key	Key of Terror	pk1 / pk1s; wrapped as flpm in sorter logs	Native code list + loot filter + user confirmation	Confirmed material-tab
+Uber Key	Key of Hate	pk2 / pk2s; wrapped as flpm in sorter logs	Native code list + loot filter + user confirmation	Confirmed material-tab
+Uber Key	Key of Destruction	pk3 / pk3s; wrapped as flpm in sorter logs	Native code list + loot filter + user confirmation	Confirmed material-tab
+Uber Organ	Diablo's Horn	dhn / dhns	Native code list + loot filter	Needs confirmation
+Uber Organ	Baal's Eye	bey / beys	Native code list + loot filter	Needs confirmation
+Uber Organ	Mephisto's Brain	mbr / mbrs	Native code list + loot filter	Needs confirmation
+Potion	Full Rejuvenation Potion	rvl / rvls	Native code list + loot filter	Probably NOT material-tab
+Potion	Rejuvenation Potion	rvs / rvss	Native code list + loot filter	Probably NOT material-tab
+Crafting	Jewel Fragment	jewf / jewfs	Native code list + loot filter	Needs confirmation
+Essence	All SoE essence codes es01-es61, es31	SoE 13 essence data	NOT material-tab
+Hatred Orb	All Hatred Orb codes hor1-hor6	Native prefix handling	NOT material-tab
+Ascendancy	Ascendancy Cairn	ascc	Native prefix/code handling	NOT material-tab
+Ascendancy	Soulstone of Might	assc	Native prefix/code handling	NOT material-tab
+Ascendancy	Any code beginning with as	Native prefix handling	NOT material-tab
+
+Trackable app materials that should NOT automatically imply Materials-tab storage:
+Category	Item name	Reason
+Fate Card	All fate cards	Stored in shared stash item slots, not automatically routed by Materials tab.
+Terror	All terror items	Trackable/currency-like, but not accepted by the Materials tab.
+Glyph/Chisel	All glyphs and chisels	Trackable/currency-like, but not accepted by the Materials tab.
+Token	Token of Absolution	Trackable, but not accepted by the Materials tab.
+Hatred Orb	All Hatred Orbs	Grail/trackable items, but not accepted by the Materials tab.
+Ascendancy	All Ascendancy items	Grail/trackable items, but not accepted by the Materials tab.
+Runeword	All runewords	Manual grail completion only; not material-tab storage.
+Unique/Set/Charm/Jewel	Most normal item drops	Can be tracked, but should follow user rules only.
+
+Next implementation direction:
+1. Create a shared `MATERIAL_TAB_ITEMS` whitelist with exact item names and exact item codes.
+2. Use that whitelist for the Stash Sorter Automatic Materials Tab toggle.
+3. Keep `MATERIAL_NAMES` for sounds, achievements, and overlays.
+4. Remove broad automatic checks from `IsSorterAutomaticMaterialTabItem`; `es*`, `hor*`, and broad `as*` have been removed or blocked.
+5. Keep user-created category rules separate from automatic material affinity.

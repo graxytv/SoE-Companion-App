@@ -86,6 +86,28 @@ import {
   fateCardInfo,
   fateCardTierKey,
 } from "../lib/soe-13-items";
+import {
+  createStashSorterRule,
+  STASH_SORTER_DEFAULT_SPEED,
+  defaultStashSorterBlacklist,
+  defaultStashSorterCalibration,
+  defaultStashSorterLastRun,
+  defaultStashSorterProtectedCells,
+  normalizeStashSorterBlacklist,
+  normalizeStashSorterCalibration,
+  normalizeStashSorterLastRun,
+  normalizeStashSorterMatchValue,
+  normalizeStashSorterProtectedCells,
+  normalizeStashSorterRules,
+  normalizeStashSorterSpeed,
+  normalizeStashSorterTab,
+  stashSorterCellKey,
+  type StashSorterCalibration,
+  type StashSorterLastRun,
+  type StashSorterMatchType,
+  type StashSorterProtectedCell,
+  type StashSorterRule,
+} from "../lib/stash-sorter";
 
 /** Hotkey configuration interface */
 export interface HotkeyConfig {
@@ -133,6 +155,13 @@ export type HolyGrailFoundMap = Record<string, HolyGrailFoundEntry>;
 export type FateCardCounts = Partial<Record<string, number>>;
 export type FateCardTrackerVisibility = Partial<Record<string, boolean>>;
 export type SaveExitAutomationDifficulty = "Normal" | "Nightmare" | "Hell";
+export type {
+  StashSorterCalibration,
+  StashSorterLastRun,
+  StashSorterMatchType,
+  StashSorterProtectedCell,
+  StashSorterRule,
+};
 export interface HolyGrailBackupStatus {
   backupExists: boolean;
   backupPath: string;
@@ -241,6 +270,26 @@ export interface AppSettings {
   mulingModeHotkey: HotkeyConfig;
   /** Hotkey that runs the experimental game reset automation. */
   gameResetHotkey: HotkeyConfig;
+  /** When true, the native hook may sort matching inventory items into shared stash tabs when the sorter hotkey is pressed. */
+  stashSorterEnabled: boolean;
+  /** When true, known material-tab items are moved with the game's material-tab affinity instead of a numbered shared tab. */
+  stashSorterAutomaticMaterialsTabEnabled: boolean;
+  /** Hotkey that triggers a batch stash sort while the shared stash is open. */
+  stashSorterHotkey: HotkeyConfig;
+  /** Hotkey that requests the active stash sorter run to stop as soon as possible. */
+  stashSorterStopHotkey: HotkeyConfig;
+  /** Sorter speed percentage. 100 matches the default native delay profile. */
+  stashSorterSpeed: number;
+  /** Ordered stash sorting rules. First enabled match wins. */
+  stashSorterRules: StashSorterRule[];
+  /** Exact item names or codes that must never be moved by the stash sorter. */
+  stashSorterBlacklist: string[];
+  /** Calibrated inventory grid coordinates used by the hook for mouse clicks. */
+  stashSorterCalibration: StashSorterCalibration;
+  /** Inventory grid cells the sorter must never click. */
+  stashSorterProtectedCells: StashSorterProtectedCell[];
+  /** Last quiet sort result reported by the hook/config flow. */
+  stashSorterLastRun: StashSorterLastRun;
   /** When true, show the Drops Tracker counter on the overlay */
   dropsTrackerEnabled: boolean;
   /** When true, show the Run Counter row on the Drops Tracker overlay. */
@@ -477,10 +526,23 @@ const DEFAULT_GAME_RESET_HOTKEY: HotkeyConfig = {
   display: "F12",
 };
 
+const DEFAULT_STASH_SORTER_HOTKEY: HotkeyConfig = {
+  keyCode: 0,
+  modifiers: 0,
+  display: "None",
+};
+
+const DEFAULT_STASH_SORTER_STOP_HOTKEY: HotkeyConfig = {
+  keyCode: 0,
+  modifiers: 0,
+  display: "None",
+};
+
 export const DEFAULT_MAIN_TAB_ORDER = [
   "home",
   "general",
   "overlays",
+  "stash-sorter",
   "drops-tracker",
   "lootfilter",
   "sounds",
@@ -492,7 +554,6 @@ export const DEFAULT_MAIN_TAB_ORDER = [
 
 export const DEFAULT_DROPS_TRACKER_SUB_TAB_ORDER = [
   "overview",
-  "drops-hook",
   "identified-drops",
   "muling-mode",
 ];
@@ -578,6 +639,16 @@ const DEFAULT_SETTINGS: AppSettings = {
   resetDropsTrackerHotkey: DEFAULT_RESET_DROPS_TRACKER_HOTKEY,
   mulingModeHotkey: DEFAULT_MULING_MODE_HOTKEY,
   gameResetHotkey: DEFAULT_GAME_RESET_HOTKEY,
+  stashSorterEnabled: false,
+  stashSorterAutomaticMaterialsTabEnabled: true,
+  stashSorterHotkey: DEFAULT_STASH_SORTER_HOTKEY,
+  stashSorterStopHotkey: DEFAULT_STASH_SORTER_STOP_HOTKEY,
+  stashSorterSpeed: STASH_SORTER_DEFAULT_SPEED,
+  stashSorterRules: [],
+  stashSorterBlacklist: defaultStashSorterBlacklist(),
+  stashSorterCalibration: defaultStashSorterCalibration(),
+  stashSorterProtectedCells: defaultStashSorterProtectedCells(),
+  stashSorterLastRun: defaultStashSorterLastRun(),
   dropsTrackerEnabled: true,
   dropsTrackerRunCounterEnabled: true,
   dropsTrackerRunTimerEnabled: true,
@@ -670,6 +741,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   goblinAlertSlot: null,
 };
 
+const SETTINGS_LOAD_TIMEOUT_MS = 8000;
+
 /** Settings store singleton */
 class SettingsStore {
   private _settings = $state<AppSettings>({ ...DEFAULT_SETTINGS });
@@ -731,6 +804,27 @@ class SettingsStore {
         item.dropsTrackerCategories.length > 0 ||
         item.totalDropsTrackerCategories.length > 0,
       )
+      .slice(0, 20);
+  }
+
+  private mergeRecentItems(
+    incoming: unknown,
+    existing: unknown = this._settings.dropsTrackerRecentItems,
+  ): DropTrackerRecentItem[] {
+    const combined = [
+      ...this.normalizeRecentItems(incoming),
+      ...this.normalizeRecentItems(existing),
+    ];
+    const seen = new Set<string>();
+    return combined
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => {
+        if (!item.id || seen.has(item.id)) return false;
+        seen.add(item.id);
+        return true;
+      })
+      .sort((a, b) => b.item.timestampMs - a.item.timestampMs || a.index - b.index)
+      .map(({ item }) => item)
       .slice(0, 20);
   }
 
@@ -1147,6 +1241,21 @@ class SettingsStore {
         settings.mulingModeHotkey ?? DEFAULT_SETTINGS.mulingModeHotkey,
       gameResetHotkey:
         settings.gameResetHotkey ?? DEFAULT_SETTINGS.gameResetHotkey,
+      stashSorterEnabled:
+        settings.stashSorterEnabled ?? DEFAULT_SETTINGS.stashSorterEnabled,
+      stashSorterAutomaticMaterialsTabEnabled:
+        settings.stashSorterAutomaticMaterialsTabEnabled ??
+        DEFAULT_SETTINGS.stashSorterAutomaticMaterialsTabEnabled,
+      stashSorterHotkey:
+        settings.stashSorterHotkey ?? DEFAULT_SETTINGS.stashSorterHotkey,
+      stashSorterStopHotkey:
+        settings.stashSorterStopHotkey ?? DEFAULT_SETTINGS.stashSorterStopHotkey,
+      stashSorterSpeed: normalizeStashSorterSpeed(settings.stashSorterSpeed),
+      stashSorterRules: normalizeStashSorterRules(settings.stashSorterRules),
+      stashSorterBlacklist: normalizeStashSorterBlacklist(settings.stashSorterBlacklist),
+      stashSorterCalibration: normalizeStashSorterCalibration(settings.stashSorterCalibration),
+      stashSorterProtectedCells: normalizeStashSorterProtectedCells(settings.stashSorterProtectedCells),
+      stashSorterLastRun: normalizeStashSorterLastRun(settings.stashSorterLastRun),
       dropsTrackerCategories: normalizeCategorySettings(
         settings.dropsTrackerCategories,
         defaultDropsTrackerCategories(),
@@ -1501,7 +1610,17 @@ class SettingsStore {
     this._isLoading = true;
 
     try {
-      const loaded = await invoke<AppSettings>("load_settings");
+      let timeoutId: number | undefined;
+      const loaded = await Promise.race([
+        invoke<AppSettings>("load_settings"),
+        new Promise<never>((_, reject) => {
+          timeoutId = window.setTimeout(() => {
+            reject(new Error("Settings load timed out. Starting with fallback settings."));
+          }, SETTINGS_LOAD_TIMEOUT_MS);
+        }),
+      ]).finally(() => {
+        if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      });
       this._settings = this.normalizeSettings({
         ...DEFAULT_SETTINGS,
         ...loaded,
@@ -1510,6 +1629,7 @@ class SettingsStore {
 
       // Apply theme immediately
       this.applyTheme(this._settings.theme);
+      void this.writeStashSorterConfig();
     } catch (error) {
       console.error("[Settings] Failed to load:", error);
       // Use defaults on error
@@ -1518,6 +1638,7 @@ class SettingsStore {
         { resetTimerBaseline: true },
       );
       this._isLoaded = true;
+      void this.writeStashSorterConfig();
     } finally {
       this._isLoading = false;
     }
@@ -1583,6 +1704,29 @@ class SettingsStore {
     this._settings = { ...this._settings, ...partial };
   }
 
+  private applyAuthoritativeSettingsSnapshot(
+    snapshot: AppSettings,
+    resetKeys: ReadonlySet<keyof AppSettings>,
+  ): void {
+    const localBeforeMerge = this._settings;
+    const next: AppSettings = this.normalizeSettings({
+      ...DEFAULT_SETTINGS,
+      ...snapshot,
+    });
+    for (const key of this._dirtyKeys) {
+      if (!resetKeys.has(key)) {
+        (next as AppSettings)[key] = localBeforeMerge[key] as never;
+      }
+    }
+    for (const key of resetKeys) {
+      this._dirtyKeys.delete(key);
+    }
+    if (this._settings.theme !== next.theme) {
+      this.applyTheme(next.theme);
+    }
+    this._settings = next;
+  }
+
   private persistDropsTrackerTimerSnapshot(): void {
     this._dirtyKeys.add("dropsTrackerRunElapsedMs");
     this._dirtyKeys.add("dropsTrackerSessionElapsedMs");
@@ -1610,7 +1754,8 @@ class SettingsStore {
    *  in, keeping any locally-dirty keys (pending debounce) intact. */
   async initSync(): Promise<void> {
     if (this._syncUnlisten) return;
-    this._syncUnlisten = await listen<AppSettings>(
+    const unlisteners: UnlistenFn[] = [];
+    unlisteners.push(await listen<AppSettings>(
       "settings-updated",
       (event) => {
         const external = event.payload;
@@ -1639,7 +1784,33 @@ class SettingsStore {
         }
         this._settings = merged;
       },
-    );
+    ));
+    unlisteners.push(await listen<AppSettings>(
+      "holy-grail-reset",
+      (event) => {
+        this.applyAuthoritativeSettingsSnapshot(
+          event.payload,
+          new Set<keyof AppSettings>(["holyGrailFound", "fateCardDropCounts"]),
+        );
+      },
+    ));
+    unlisteners.push(await listen<AppSettings>(
+      "achievement-progress-reset",
+      (event) => {
+        this.applyAuthoritativeSettingsSnapshot(
+          event.payload,
+          new Set<keyof AppSettings>([
+            "achievementStats",
+            "runeTrackerCounts",
+            "holyGrailFound",
+            "fateCardDropCounts",
+          ]),
+        );
+      },
+    ));
+    this._syncUnlisten = () => {
+      for (const unlisten of unlisteners) unlisten();
+    };
   }
 
   /** Tear down the cross-window sync listener. */
@@ -1837,6 +2008,135 @@ class SettingsStore {
 
   setGameResetHotkey(hotkey: HotkeyConfig): void {
     this.set("gameResetHotkey", hotkey);
+  }
+
+  async writeStashSorterConfig(): Promise<boolean> {
+    try {
+      await invoke("write_stash_sorter_config", {
+        enabled: this._settings.stashSorterEnabled,
+        automaticMaterialsTabEnabled:
+          this._settings.stashSorterAutomaticMaterialsTabEnabled,
+        hotkey: this._settings.stashSorterHotkey,
+        stopHotkey: this._settings.stashSorterStopHotkey,
+        speed: this._settings.stashSorterSpeed,
+        rules: this._settings.stashSorterRules,
+        blacklist: this._settings.stashSorterBlacklist,
+        calibration: this._settings.stashSorterCalibration,
+        protectedCells: this._settings.stashSorterProtectedCells,
+      });
+      return true;
+    } catch (error) {
+      console.error("[Settings] Failed to write stash sorter config:", error);
+      return false;
+    }
+  }
+
+  setStashSorterEnabled(enabled: boolean): void {
+    this.set("stashSorterEnabled", enabled);
+    void this.writeStashSorterConfig();
+  }
+
+  setStashSorterAutomaticMaterialsTabEnabled(enabled: boolean): void {
+    this.set("stashSorterAutomaticMaterialsTabEnabled", enabled);
+    void this.writeStashSorterConfig();
+  }
+
+  setStashSorterHotkey(hotkey: HotkeyConfig): void {
+    this.set("stashSorterHotkey", hotkey);
+    void this.writeStashSorterConfig();
+  }
+
+  setStashSorterStopHotkey(hotkey: HotkeyConfig): void {
+    this.set("stashSorterStopHotkey", hotkey);
+    void this.writeStashSorterConfig();
+  }
+
+  setStashSorterSpeed(speed: number): void {
+    this.set("stashSorterSpeed", normalizeStashSorterSpeed(speed));
+    void this.writeStashSorterConfig();
+  }
+
+  addStashSorterRule(patch: Partial<StashSorterRule> = {}): void {
+    this.set("stashSorterRules", [
+      ...this._settings.stashSorterRules,
+      createStashSorterRule(patch),
+    ]);
+    void this.writeStashSorterConfig();
+  }
+
+  updateStashSorterRule(id: string, patch: Partial<StashSorterRule>): void {
+    const next = this._settings.stashSorterRules.map((rule) => {
+      if (rule.id !== id) return rule;
+      const matchType = patch.matchType ?? rule.matchType;
+      return {
+        ...rule,
+        ...patch,
+        matchType,
+        matchValue:
+          patch.matchValue !== undefined || patch.matchType !== undefined
+            ? normalizeStashSorterMatchValue(matchType, patch.matchValue ?? rule.matchValue)
+            : rule.matchValue,
+        targetTab:
+          patch.targetTab !== undefined
+            ? normalizeStashSorterTab(patch.targetTab)
+            : rule.targetTab,
+      };
+    });
+    this.set("stashSorterRules", normalizeStashSorterRules(next));
+    void this.writeStashSorterConfig();
+  }
+
+  removeStashSorterRule(id: string): void {
+    this.set(
+      "stashSorterRules",
+      this._settings.stashSorterRules.filter((rule) => rule.id !== id),
+    );
+    void this.writeStashSorterConfig();
+  }
+
+  moveStashSorterRule(id: string, direction: -1 | 1): void {
+    const rules = this._settings.stashSorterRules.slice();
+    const index = rules.findIndex((rule) => rule.id === id);
+    const nextIndex = index + direction;
+    if (index < 0 || nextIndex < 0 || nextIndex >= rules.length) return;
+    [rules[index], rules[nextIndex]] = [rules[nextIndex], rules[index]];
+    this.set("stashSorterRules", rules);
+    void this.writeStashSorterConfig();
+  }
+
+  setStashSorterBlacklist(value: string[]): void {
+    this.set("stashSorterBlacklist", normalizeStashSorterBlacklist(value));
+    void this.writeStashSorterConfig();
+  }
+
+  setStashSorterCalibration(value: Partial<StashSorterCalibration>): void {
+    this.set(
+      "stashSorterCalibration",
+      normalizeStashSorterCalibration({
+        ...this._settings.stashSorterCalibration,
+        ...value,
+      }),
+    );
+    void this.writeStashSorterConfig();
+  }
+
+  setStashSorterProtectedCells(value: StashSorterProtectedCell[]): void {
+    this.set("stashSorterProtectedCells", normalizeStashSorterProtectedCells(value));
+    void this.writeStashSorterConfig();
+  }
+
+  toggleStashSorterProtectedCell(x: number, y: number): void {
+    const key = stashSorterCellKey(x, y);
+    const current = normalizeStashSorterProtectedCells(this._settings.stashSorterProtectedCells);
+    const hasCell = current.some((cell) => stashSorterCellKey(cell.x, cell.y) === key);
+    const next = hasCell
+      ? current.filter((cell) => stashSorterCellKey(cell.x, cell.y) !== key)
+      : [...current, { x, y }];
+    this.setStashSorterProtectedCells(next);
+  }
+
+  setStashSorterLastRun(value: StashSorterLastRun): void {
+    this.set("stashSorterLastRun", normalizeStashSorterLastRun(value));
   }
 
   get dropsTrackerEnabled(): boolean {
@@ -2624,12 +2924,19 @@ class SettingsStore {
     this.emitHolyGrailFoundUpdated(next);
   }
 
-  resetHolyGrail(): void {
-    this.update({
-      holyGrailFound: {},
-      fateCardDropCounts: {},
-    });
-    this.emitHolyGrailFoundUpdated({});
+  async resetHolyGrail(): Promise<void> {
+    if (this._holyGrailBackupTimeout) {
+      clearTimeout(this._holyGrailBackupTimeout);
+      this._holyGrailBackupTimeout = null;
+    }
+    this._pendingHolyGrailBackup = null;
+    const resetKeys = new Set<keyof AppSettings>([
+      "holyGrailFound",
+      "fateCardDropCounts",
+    ]);
+    const saved = await invoke<AppSettings>("reset_holy_grail_found");
+    this.applyAuthoritativeSettingsSnapshot(saved, resetKeys);
+    await emit("holy-grail-reset", JSON.parse(JSON.stringify(saved)));
   }
 
   private completedFateCardFoundEntry(name: string): HolyGrailFoundEntry | null {
@@ -3077,8 +3384,16 @@ class SettingsStore {
     let holyGrailFoundChanged = false;
     let completedFateCardEntries: HolyGrailFoundEntry[] = [];
     let achievementUnlockEntries: AchievementUnlockEntry[] = [];
+    const shouldRecordRecentItem =
+      shouldRecordDropCounts ||
+      !!runeName ||
+      tracksUnique ||
+      input.isNewGrail === true ||
+      !!input.fateCardName ||
+      !!input.materialAchievementName ||
+      !!input.trackerMaterialName;
 
-    if (shouldRecordDropCounts) {
+    if (shouldRecordRecentItem) {
       const recentItem: DropTrackerRecentItem = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
         timestampMs: Date.now(),
@@ -3089,6 +3404,13 @@ class SettingsStore {
         totalDropsTrackerCategories: Array.from(new Set(totalCategories)),
         source: input.source?.trim() || "manual",
       };
+      partial.dropsTrackerRecentItems = [
+        recentItem,
+        ...current.dropsTrackerRecentItems,
+      ].slice(0, 20);
+    }
+
+    if (shouldRecordDropCounts) {
       partial.dropsTrackerCounts = normalizeCounts(
         incrementCounts(
           current.dropsTrackerCounts,
@@ -3103,10 +3425,6 @@ class SettingsStore {
           current.totalDropsTrackerCategories,
         ),
       );
-      partial.dropsTrackerRecentItems = [
-        recentItem,
-        ...current.dropsTrackerRecentItems,
-      ].slice(0, 20);
     }
 
     if (runeName) {
@@ -3271,7 +3589,7 @@ class SettingsStore {
         ? { totalDropsTrackerCounts: normalizeCounts(snapshot.totalDropsTrackerCounts) }
         : {}),
       ...(snapshot.dropsTrackerRecentItems
-        ? { dropsTrackerRecentItems: this.normalizeRecentItems(snapshot.dropsTrackerRecentItems) }
+        ? { dropsTrackerRecentItems: this.mergeRecentItems(snapshot.dropsTrackerRecentItems) }
         : {}),
       ...(snapshot.runeTrackerCounts
         ? { runeTrackerCounts: normalizeRuneTrackerCounts(snapshot.runeTrackerCounts) }
@@ -3367,12 +3685,21 @@ class SettingsStore {
     this.set("achievementStats", normalizeAchievementStats(stats));
   }
 
-  resetAchievementProgress(): void {
-    this.update({
-      achievementStats: defaultAchievementStats(),
-      runeTrackerCounts: defaultRuneTrackerCounts(),
-      holyGrailFound: {},
-    });
+  async resetAchievementProgress(): Promise<void> {
+    if (this._holyGrailBackupTimeout) {
+      clearTimeout(this._holyGrailBackupTimeout);
+      this._holyGrailBackupTimeout = null;
+    }
+    this._pendingHolyGrailBackup = null;
+    const resetKeys = new Set<keyof AppSettings>([
+      "achievementStats",
+      "runeTrackerCounts",
+      "holyGrailFound",
+      "fateCardDropCounts",
+    ]);
+    const saved = await invoke<AppSettings>("reset_achievement_progress");
+    this.applyAuthoritativeSettingsSnapshot(saved, resetKeys);
+    await emit("achievement-progress-reset", JSON.parse(JSON.stringify(saved)));
   }
 
   updateAchievementStats(partial: Partial<AchievementStats>): void {

@@ -34,6 +34,10 @@
       windowType === 'tracker-card-overlay';
   }
 
+  function shouldShowStartupFallbackForWindow(type: WindowType): boolean {
+    return type === 'main' || type === 'tracker-overlay';
+  }
+
   function syncMulingBannerWindow(visible: boolean): void {
     if (!windowType || isUtilityOverlayWindow()) return;
     invoke('set_muling_banner_window_visible', { visible }).catch((err) => {
@@ -82,11 +86,11 @@
               ? 'tracker-card-overlay'
               : 'main';
     windowType = resolvedWindowType;
-    if (windowType !== 'main') {
+    if (shouldShowStartupFallbackForWindow(windowType)) {
       showStartupFallback = true;
     }
     const startupFallbackTimer = window.setTimeout(() => {
-      showStartupFallback = true;
+      showStartupFallback = shouldShowStartupFallbackForWindow(windowType);
     }, 1200);
 
     // Add class to html element for overlay styling

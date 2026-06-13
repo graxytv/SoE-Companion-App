@@ -26,20 +26,28 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
+#include <stdlib.h>
 #include <string>
 #include <vector>
 
 static const char* SOE_COMPANION_ROOT_DIR = "C:\\SoECompanion";
 static const char* SOE_COMPANION_LOG_DIR = "C:\\SoECompanion\\logs";
+static const char* SOE_COMPANION_CONFIG_DIR = "C:\\SoECompanion\\config";
 static const char* SOE_HOOK_DROP_LOG_PATH = "C:\\SoECompanion\\logs\\soe_companion_drops.log";
 static const char* SOE_GRAIL_LOG_PATH = "C:\\SoECompanion\\logs\\grail_drops.log";
 static const char* SOE_MATERIALS_TRACE_LOG_PATH = "C:\\SoECompanion\\logs\\soe_materials_trace.log";
 static const char* SOE_PGAME_DIAG_LOG_PATH = "C:\\SoECompanion\\logs\\soe_pgame_postload_diag.log";
+static const char* SOE_STASH_SORTER_CONFIG_PATH = "C:\\SoECompanion\\config\\stash_sorter.ini";
+static const char* SOE_STASH_SORTER_LOG_PATH = "C:\\SoECompanion\\logs\\stash_sorter.log";
+static const uint32_t SOE_STASH_SORTER_SHARED_TAB_COUNT = 9;
+static const uint32_t SOE_STASH_SORTER_MATERIALS_TAB_TARGET = 1000;
 
 static void EnsureSoECompanionLogDir()
 {
     CreateDirectoryA(SOE_COMPANION_ROOT_DIR, nullptr);
     CreateDirectoryA(SOE_COMPANION_LOG_DIR, nullptr);
+    CreateDirectoryA(SOE_COMPANION_CONFIG_DIR, nullptr);
 }
 
 static FILE* OpenSoECompanionLogFile(const char* path, const char* mode)
@@ -130,12 +138,36 @@ static const uintptr_t UNIT_ID       = 0x0C;
 static const uintptr_t UNIT_MODE     = 0x10;
 static const uint32_t ITEM_MODE_ON_GROUND = 3;
 static const uintptr_t UNIT_ITEMDATA = 0x14;
+static const uintptr_t UNIT_PATH     = 0x2C;
+static const uintptr_t UNIT_INVENTORY = 0x60;
 
 // ItemData offsets
 static const uintptr_t ITEM_QUALITY   = 0x00;
 static const uintptr_t ITEM_SEED      = 0x14;
 static const uintptr_t ITEM_FLAGS     = 0x18;
 static const uintptr_t ITEM_FILEINDEX = 0x2C;
+static const uintptr_t ITEM_NEXT      = 0x64;
+static const uintptr_t ITEM_PAGE      = 0x1B4;
+static const uintptr_t ITEM_NODE_PAGE = 0x5C;
+static const uintptr_t ITEM_BODY_LOCATION = 0x5D;
+static const uintptr_t ITEM_INVENTORY_PAGE = 0x5E;
+
+// D2InventoryStrc offsets
+static const uintptr_t INVENTORY_FIRST_ITEM = 0x0C;
+static const uintptr_t INVENTORY_GRIDS = 0x14;
+static const uintptr_t INVENTORY_GRID_WIDTH = 0x08;
+static const uintptr_t INVENTORY_GRID_HEIGHT = 0x09;
+static const uintptr_t INVENTORY_GRID_PP_ITEMS = 0x0C;
+static const uintptr_t INVENTORY_GRID_SIZE = 0x10;
+static const uint32_t SORTER_BACKPACK_GRID_WIDTH = 10;
+static const uint32_t SORTER_BACKPACK_LOGICAL_HEIGHT = 8;
+static const uint32_t SORTER_BACKPACK_MAX_GRID_HEIGHT = 8;
+static const uint32_t SORTER_BACKPACK_FIRST_ROW = 0;
+static const uint32_t SORTER_MAX_GRID_PROBE_COUNT = 16;
+
+// D2DynamicPathStrc-ish offsets used by item units.
+static const uintptr_t ITEM_PATH_X = 0x0C;
+static const uintptr_t ITEM_PATH_Y = 0x10;
 
 // Item quality values
 static const uint32_t QUALITY_MAGIC  = 4;
@@ -7774,7 +7806,2180 @@ static void TryLogItemName(uintptr_t pUnit, uint32_t quality)
     }
 }
 
+// Stash Sorter hotkey.
+enum StashSorterMatchType {
+    SORT_MATCH_CATEGORY = 0,
+    SORT_MATCH_ITEM_NAME = 1,
+    SORT_MATCH_ITEM_CODE = 2,
+};
+
+struct StashSorterRule {
+    bool enabled;
+    StashSorterMatchType matchType;
+    char matchValue[128];
+    uint32_t targetTab;
+};
+
+struct StashSorterConfig {
+    bool enabled;
+    bool automaticMaterialsTabEnabled;
+    uint32_t keyCode;
+    uint32_t modifiers;
+    uint32_t stopKeyCode;
+    uint32_t stopModifiers;
+    uint32_t speed;
+    std::vector<StashSorterRule> rules;
+    std::vector<std::string> blacklist;
+    bool calibrationEnabled;
+    double calibrationLeft;
+    double calibrationTop;
+    double calibrationCellWidth;
+    double calibrationCellHeight;
+    bool protectedCells[SORTER_BACKPACK_MAX_GRID_HEIGHT][SORTER_BACKPACK_GRID_WIDTH];
+    FILETIME lastWriteTime;
+    bool loaded;
+};
+
+struct StashSorterCandidate {
+    uintptr_t unit;
+    uint32_t unitId;
+    uint32_t code;
+    uint32_t quality;
+    uint32_t flags;
+    uint32_t gridX;
+    uint32_t gridY;
+    uint32_t page;
+    uint8_t nodePage;
+    uint8_t bodyLocation;
+    uint8_t inventoryPage;
+    char codeText[12];
+    char displayName[256];
+    uint32_t targetTab;
+    uint32_t gridIndex;
+    uint32_t transferGridX;
+    uint32_t transferGridY;
+};
+
+static StashSorterConfig g_stashSorterConfig = {};
+static volatile LONG g_stashSorterRunning = 0;
+static volatile LONG g_stashSorterStopRequested = 0;
+static double g_stashSorterCursorScaleX = 0.0;
+static double g_stashSorterCursorScaleY = 0.0;
+
+static void AppendStashSorterLog(const char* fmt, ...)
+{
+    FILE* f = OpenSoECompanionLogFile(SOE_STASH_SORTER_LOG_PATH, "a");
+    if (!f) return;
+
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    fprintf(f, "%04d-%02d-%02d %02d:%02d:%02d ",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(f, fmt, args);
+    va_end(args);
+    fprintf(f, "\n");
+    fclose(f);
+}
+
+static void NormalizeText(const char* in, char* out, size_t outSize)
+{
+    if (!out || outSize == 0) return;
+    size_t written = 0;
+    bool lastSpace = true;
+    const unsigned char* src = (const unsigned char*)(in ? in : "");
+    while (*src && written + 1 < outSize) {
+        unsigned char ch = *src++;
+        if (ch >= 0x80) continue;
+        if (isalnum(ch)) {
+            out[written++] = (char)tolower(ch);
+            lastSpace = false;
+        } else if (!lastSpace) {
+            out[written++] = ' ';
+            lastSpace = true;
+        }
+    }
+    while (written > 0 && out[written - 1] == ' ') --written;
+    out[written] = '\0';
+}
+
+static bool NormalizedEquals(const char* a, const char* b)
+{
+    char na[256] = {};
+    char nb[256] = {};
+    NormalizeText(a, na, sizeof(na));
+    NormalizeText(b, nb, sizeof(nb));
+    return na[0] && nb[0] && strcmp(na, nb) == 0;
+}
+
+static bool NormalizedContains(const char* text, const char* needle)
+{
+    char normalizedText[256] = {};
+    char normalizedNeedle[128] = {};
+    NormalizeText(text, normalizedText, sizeof(normalizedText));
+    NormalizeText(needle, normalizedNeedle, sizeof(normalizedNeedle));
+    return normalizedText[0] && normalizedNeedle[0] && strstr(normalizedText, normalizedNeedle) != nullptr;
+}
+
+static void LowerCopy(const char* in, char* out, size_t outSize)
+{
+    if (!out || outSize == 0) return;
+    size_t written = 0;
+    const unsigned char* src = (const unsigned char*)(in ? in : "");
+    while (*src && written + 1 < outSize) {
+        unsigned char ch = *src++;
+        if (isalnum(ch)) out[written++] = (char)tolower(ch);
+    }
+    out[written] = '\0';
+}
+
+static bool SameFileTime(const FILETIME& a, const FILETIME& b)
+{
+    return a.dwLowDateTime == b.dwLowDateTime && a.dwHighDateTime == b.dwHighDateTime;
+}
+
+static bool TryGetFileWriteTime(const char* path, FILETIME* out)
+{
+    WIN32_FILE_ATTRIBUTE_DATA data = {};
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &data)) return false;
+    if (out) *out = data.ftLastWriteTime;
+    return true;
+}
+
+static StashSorterMatchType ParseStashSorterMatchType(const char* text)
+{
+    if (_stricmp(text, "itemName") == 0 || _stricmp(text, "name") == 0) return SORT_MATCH_ITEM_NAME;
+    if (_stricmp(text, "itemCode") == 0 || _stricmp(text, "code") == 0) return SORT_MATCH_ITEM_CODE;
+    return SORT_MATCH_CATEGORY;
+}
+
+static double ClampSorterDouble(double value, double fallback, double minValue, double maxValue)
+{
+    if (value != value) return fallback;
+    if (value < minValue) return minValue;
+    if (value > maxValue) return maxValue;
+    return value;
+}
+
+static double ReadStashSorterProfileDouble(const char* section, const char* key, double fallback, double minValue, double maxValue)
+{
+    char raw[64] = {};
+    GetPrivateProfileStringA(section, key, "", raw, sizeof(raw), SOE_STASH_SORTER_CONFIG_PATH);
+    if (!raw[0]) return fallback;
+    return ClampSorterDouble(atof(raw), fallback, minValue, maxValue);
+}
+
+static void ClearStashSorterProtectedCells(StashSorterConfig* config)
+{
+    if (!config) return;
+    for (uint32_t y = 0; y < SORTER_BACKPACK_MAX_GRID_HEIGHT; ++y) {
+        for (uint32_t x = 0; x < SORTER_BACKPACK_GRID_WIDTH; ++x) {
+            config->protectedCells[y][x] = false;
+        }
+    }
+}
+
+static uint32_t CountStashSorterProtectedCells(const StashSorterConfig& config)
+{
+    uint32_t count = 0;
+    for (uint32_t y = 0; y < SORTER_BACKPACK_MAX_GRID_HEIGHT; ++y) {
+        for (uint32_t x = 0; x < SORTER_BACKPACK_GRID_WIDTH; ++x) {
+            if (config.protectedCells[y][x]) ++count;
+        }
+    }
+    return count;
+}
+
+static void LoadStashSorterConfigIfChanged()
+{
+    FILETIME writeTime = {};
+    bool hasFileTime = TryGetFileWriteTime(SOE_STASH_SORTER_CONFIG_PATH, &writeTime);
+    if (g_stashSorterConfig.loaded) {
+        if (!hasFileTime) return;
+        if (SameFileTime(writeTime, g_stashSorterConfig.lastWriteTime)) return;
+    } else if (!hasFileTime) {
+        g_stashSorterConfig.loaded = true;
+        g_stashSorterConfig.enabled = false;
+        AppendStashSorterLog("config missing; sorter disabled until C:\\SoECompanion\\config\\stash_sorter.ini exists");
+        return;
+    }
+
+    StashSorterConfig next = {};
+    next.loaded = true;
+    next.lastWriteTime = writeTime;
+    int configVersion = GetPrivateProfileIntA("StashSorter", "Version", 1, SOE_STASH_SORTER_CONFIG_PATH);
+    next.enabled = GetPrivateProfileIntA("StashSorter", "Enabled", 0, SOE_STASH_SORTER_CONFIG_PATH) != 0;
+    next.automaticMaterialsTabEnabled = GetPrivateProfileIntA("StashSorter", "AutomaticMaterialsTab", 1, SOE_STASH_SORTER_CONFIG_PATH) != 0;
+    next.keyCode = (uint32_t)GetPrivateProfileIntA("StashSorter", "KeyCode", 0, SOE_STASH_SORTER_CONFIG_PATH);
+    next.modifiers = (uint32_t)GetPrivateProfileIntA("StashSorter", "Modifiers", 0, SOE_STASH_SORTER_CONFIG_PATH);
+    next.stopKeyCode = (uint32_t)GetPrivateProfileIntA("StashSorter", "StopKeyCode", 0, SOE_STASH_SORTER_CONFIG_PATH);
+    next.stopModifiers = (uint32_t)GetPrivateProfileIntA("StashSorter", "StopModifiers", 0, SOE_STASH_SORTER_CONFIG_PATH);
+    int speed = GetPrivateProfileIntA("StashSorter", "Speed", 100, SOE_STASH_SORTER_CONFIG_PATH);
+    if (speed < 50) speed = 50;
+    if (speed > 250) speed = 250;
+    next.speed = (uint32_t)speed;
+    next.calibrationEnabled = GetPrivateProfileIntA("Calibration", "Enabled", 0, SOE_STASH_SORTER_CONFIG_PATH) != 0;
+    next.calibrationLeft = ReadStashSorterProfileDouble("Calibration", "Left", 417.0, 0.0, 800.0);
+    next.calibrationTop = ReadStashSorterProfileDouble("Calibration", "Top", 219.0, 0.0, 600.0);
+    next.calibrationCellWidth = ReadStashSorterProfileDouble("Calibration", "CellWidth", 29.0, 8.0, 120.0);
+    next.calibrationCellHeight = ReadStashSorterProfileDouble("Calibration", "CellHeight", 29.0, 8.0, 120.0);
+    ClearStashSorterProtectedCells(&next);
+    if (configVersion < 2) {
+        for (uint32_t y = 4; y < SORTER_BACKPACK_MAX_GRID_HEIGHT; ++y) {
+            for (uint32_t x = 0; x < SORTER_BACKPACK_GRID_WIDTH; ++x) {
+                next.protectedCells[y][x] = true;
+            }
+        }
+    }
+
+    int ruleCount = GetPrivateProfileIntA("StashSorter", "RuleCount", 0, SOE_STASH_SORTER_CONFIG_PATH);
+    if (ruleCount < 0) ruleCount = 0;
+    if (ruleCount > 200) ruleCount = 200;
+    for (int i = 0; i < ruleCount; ++i) {
+        char key[32] = {};
+        char raw[512] = {};
+        snprintf(key, sizeof(key), "Rule%d", i);
+        GetPrivateProfileStringA("Rules", key, "", raw, sizeof(raw), SOE_STASH_SORTER_CONFIG_PATH);
+        if (!raw[0]) continue;
+
+        char* enabledText = strtok(raw, "|");
+        char* typeText = strtok(nullptr, "|");
+        char* valueText = strtok(nullptr, "|");
+        char* targetText = strtok(nullptr, "|");
+        if (!enabledText || !typeText || !valueText || !targetText) continue;
+
+        StashSorterRule rule = {};
+        rule.enabled = atoi(enabledText) != 0;
+        rule.matchType = ParseStashSorterMatchType(typeText);
+        strncpy(rule.matchValue, valueText, sizeof(rule.matchValue) - 1);
+        int target = atoi(targetText);
+        if (target < 1) target = 1;
+        if (target > (int)SOE_STASH_SORTER_SHARED_TAB_COUNT) target = (int)SOE_STASH_SORTER_SHARED_TAB_COUNT;
+        rule.targetTab = (uint32_t)target;
+        if (rule.matchValue[0]) next.rules.push_back(rule);
+    }
+
+    int blacklistCount = GetPrivateProfileIntA("StashSorter", "BlacklistCount", 0, SOE_STASH_SORTER_CONFIG_PATH);
+    if (blacklistCount < 0) blacklistCount = 0;
+    if (blacklistCount > 200) blacklistCount = 200;
+    for (int i = 0; i < blacklistCount; ++i) {
+        char key[32] = {};
+        char raw[256] = {};
+        snprintf(key, sizeof(key), "Item%d", i);
+        GetPrivateProfileStringA("Blacklist", key, "", raw, sizeof(raw), SOE_STASH_SORTER_CONFIG_PATH);
+        if (raw[0]) next.blacklist.push_back(std::string(raw));
+    }
+
+    int protectedCellCount = GetPrivateProfileIntA("Calibration", "ProtectedCellCount", 0, SOE_STASH_SORTER_CONFIG_PATH);
+    if (protectedCellCount < 0) protectedCellCount = 0;
+    if (protectedCellCount > 80) protectedCellCount = 80;
+    for (int i = 0; i < protectedCellCount; ++i) {
+        char key[32] = {};
+        char raw[64] = {};
+        snprintf(key, sizeof(key), "Cell%d", i);
+        GetPrivateProfileStringA("ProtectedCells", key, "", raw, sizeof(raw), SOE_STASH_SORTER_CONFIG_PATH);
+        if (!raw[0]) continue;
+
+        char* xText = strtok(raw, ",");
+        char* yText = strtok(nullptr, ",");
+        if (!xText || !yText) continue;
+        int x = atoi(xText);
+        int y = atoi(yText);
+        if (x < 0 || x >= (int)SORTER_BACKPACK_GRID_WIDTH) continue;
+        if (y < 0 || y >= (int)SORTER_BACKPACK_MAX_GRID_HEIGHT) continue;
+        next.protectedCells[y][x] = true;
+    }
+
+    g_stashSorterConfig = next;
+    AppendStashSorterLog("config loaded version=%d enabled=%d autoMaterials=%d key=%u mods=%u stopKey=%u stopMods=%u speed=%u rules=%u blacklist=%u calibration=%d left=%.2f top=%.2f cell=%.2fx%.2f protected=%u",
+        configVersion,
+        next.enabled ? 1 : 0,
+        next.automaticMaterialsTabEnabled ? 1 : 0,
+        (unsigned)next.keyCode,
+        (unsigned)next.modifiers,
+        (unsigned)next.stopKeyCode,
+        (unsigned)next.stopModifiers,
+        (unsigned)next.speed,
+        (unsigned)next.rules.size(),
+        (unsigned)next.blacklist.size(),
+        next.calibrationEnabled ? 1 : 0,
+        next.calibrationLeft,
+        next.calibrationTop,
+        next.calibrationCellWidth,
+        next.calibrationCellHeight,
+        (unsigned)CountStashSorterProtectedCells(next));
+}
+
 // ── SetItemFlag hook ───────────────────────────────────────────────────────────
+static bool TryReadStashSorterDword(uintptr_t address, uint32_t* out)
+{
+    if (!address || IsBadReadPtr((void*)address, sizeof(uint32_t))) return false;
+    if (out) *out = *(uint32_t*)address;
+    return true;
+}
+
+static bool TryReadStashSorterPtr(uintptr_t address, uintptr_t* out)
+{
+    if (!address || IsBadReadPtr((void*)address, sizeof(uintptr_t))) return false;
+    if (out) *out = *(uintptr_t*)address;
+    return true;
+}
+
+static bool TryReadStashSorterByte(uintptr_t address, uint8_t* out)
+{
+    if (!address || IsBadReadPtr((void*)address, sizeof(uint8_t))) return false;
+    if (out) *out = *(uint8_t*)address;
+    return true;
+}
+
+static bool TryWriteStashSorterDword(uintptr_t address, uint32_t value)
+{
+    if (!address || IsBadWritePtr((void*)address, sizeof(uint32_t))) return false;
+    DWORD oldProtect = 0;
+    if (!VirtualProtect((void*)address, sizeof(uint32_t), PAGE_READWRITE, &oldProtect)) return false;
+    *(uint32_t*)address = value;
+    VirtualProtect((void*)address, sizeof(uint32_t), oldProtect, &oldProtect);
+    return true;
+}
+
+static bool StashSorterKeyDown(int vk)
+{
+    return (GetAsyncKeyState(vk) & 0x8000) != 0;
+}
+
+static bool StashSorterChordDown(uint32_t keyCode, uint32_t modifiers)
+{
+    if (keyCode == 0 && modifiers == 0) return false;
+    if (keyCode != 0 && !StashSorterKeyDown((int)keyCode)) return false;
+    if ((modifiers & 0x0001) && !StashSorterKeyDown(VK_MENU)) return false;
+    if ((modifiers & 0x0002) && !StashSorterKeyDown(VK_CONTROL)) return false;
+    if ((modifiers & 0x0004) && !StashSorterKeyDown(VK_SHIFT)) return false;
+    if ((modifiers & 0x0008) && !StashSorterKeyDown(VK_LWIN) && !StashSorterKeyDown(VK_RWIN)) return false;
+    return true;
+}
+
+static bool StashSorterSortChordPressed()
+{
+    const StashSorterConfig& config = g_stashSorterConfig;
+    if (!config.enabled) return false;
+    return StashSorterChordDown(config.keyCode, config.modifiers);
+}
+
+static bool StashSorterStopChordPressed()
+{
+    const StashSorterConfig& config = g_stashSorterConfig;
+    return StashSorterChordDown(config.stopKeyCode, config.stopModifiers);
+}
+
+static bool StashSorterStopRequested()
+{
+    if (InterlockedCompareExchange(&g_stashSorterStopRequested, 0, 0) != 0) return true;
+    if (StashSorterStopChordPressed()) {
+        InterlockedExchange(&g_stashSorterStopRequested, 1);
+        return true;
+    }
+    return false;
+}
+
+static DWORD StashSorterDelayMs(DWORD baseMs)
+{
+    uint32_t speed = g_stashSorterConfig.speed;
+    if (speed < 50) speed = 50;
+    if (speed > 250) speed = 250;
+    DWORD delay = (DWORD)(((uint64_t)baseMs * 100ull + speed - 1ull) / speed);
+    return delay < 5 ? 5 : delay;
+}
+
+static void StashSorterSleep(DWORD baseMs)
+{
+    Sleep(StashSorterDelayMs(baseMs));
+}
+
+static bool StashSorterInterruptibleSleep(DWORD baseMs)
+{
+    DWORD remaining = StashSorterDelayMs(baseMs);
+    while (remaining > 0) {
+        if (StashSorterStopRequested()) return false;
+        DWORD slice = remaining < 10 ? remaining : 10;
+        Sleep(slice);
+        remaining -= slice;
+    }
+    return !StashSorterStopRequested();
+}
+
+struct StashSorterWindowEnumData {
+    DWORD pid;
+    HWND hwnd;
+};
+
+static BOOL CALLBACK StashSorterEnumWindowProc(HWND hwnd, LPARAM lParam)
+{
+    StashSorterWindowEnumData* data = (StashSorterWindowEnumData*)lParam;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != data->pid || !IsWindowVisible(hwnd) || GetWindow(hwnd, GW_OWNER) != nullptr) {
+        return TRUE;
+    }
+
+    char title[128] = {};
+    char cls[128] = {};
+    GetWindowTextA(hwnd, title, sizeof(title));
+    GetClassNameA(hwnd, cls, sizeof(cls));
+    if (strstr(title, "Diablo II") || strstr(title, "Project Diablo") || strstr(cls, "Diablo")) {
+        data->hwnd = hwnd;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static HWND FindStashSorterGameWindow()
+{
+    HWND hwnd = FindWindowA("Diablo II", nullptr);
+    if (!hwnd || !IsWindowVisible(hwnd)) {
+        AppendStashSorterLog("aborted: top-level Diablo II window class was not found");
+        return nullptr;
+    }
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != GetCurrentProcessId()) {
+        AppendStashSorterLog("aborted: top-level Diablo II window belongs to another process hwnd=%p pid=%lu self=%lu",
+            (void*)hwnd,
+            (unsigned long)pid,
+            (unsigned long)GetCurrentProcessId());
+        return nullptr;
+    }
+
+    return hwnd;
+}
+
+static bool IsD2ForegroundForSorter(HWND* outHwnd)
+{
+    HWND hwnd = FindStashSorterGameWindow();
+    if (!hwnd) return false;
+
+    HWND foreground = GetForegroundWindow();
+    DWORD fgPid = 0;
+    DWORD selfPid = GetCurrentProcessId();
+    if (foreground) GetWindowThreadProcessId(foreground, &fgPid);
+    if (fgPid != selfPid) return false;
+
+    if (outHwnd) *outHwnd = hwnd;
+    return true;
+}
+
+static uintptr_t ReadStashSorterPlayerUnit()
+{
+    HMODULE hD2Client = GetModuleHandleA("D2Client.dll");
+    if (!hD2Client) return 0;
+
+    uintptr_t player = 0;
+    if (!TryReadStashSorterPtr((uintptr_t)hD2Client + D2CLIENT_PLAYER_UNIT_RVA, &player)) return 0;
+    if (!player || IsBadReadPtr((void*)player, UNIT_INVENTORY + sizeof(uintptr_t))) return 0;
+    return player;
+}
+
+static bool IsSharedStashOpenForSorter()
+{
+    HMODULE hProject = GetModuleHandleA("ProjectDiablo.dll");
+    if (!hProject) return false;
+
+    uint32_t stashOpen = 0;
+    if (!TryReadStashSorterDword((uintptr_t)hProject + 0x2d4b24, &stashOpen)) return false;
+    return stashOpen != 0;
+}
+
+static uint32_t ReadCurrentSharedStashIndex()
+{
+    HMODULE hProject = GetModuleHandleA("ProjectDiablo.dll");
+    if (!hProject) return 0;
+
+    uint32_t current = 0;
+    if (!TryReadStashSorterDword((uintptr_t)hProject + 0x40edd4, &current)) return 0;
+    return current;
+}
+
+static uint32_t ReadSorterProjectDword(uintptr_t rva)
+{
+    HMODULE hProject = GetModuleHandleA("ProjectDiablo.dll");
+    uintptr_t base = (uintptr_t)hProject;
+    if (!base) return 0xffffffffu;
+
+    uint32_t value = 0xffffffffu;
+    TryReadStashSorterDword(base + rva, &value);
+    return value;
+}
+
+static uint32_t ReadSorterProjectIndirectDword(uintptr_t rva)
+{
+    HMODULE hProject = GetModuleHandleA("ProjectDiablo.dll");
+    uintptr_t base = (uintptr_t)hProject;
+    if (!base) return 0xffffffffu;
+
+    uintptr_t ptr = 0;
+    if (!TryReadStashSorterPtr(base + rva, &ptr) || !ptr) return 0xffffffffu;
+
+    uint32_t value = 0xffffffffu;
+    TryReadStashSorterDword(ptr, &value);
+    return value;
+}
+
+static void LogSorterStashPageState(const char* phase, uint32_t targetTab)
+{
+    AppendStashSorterLog(
+        "stash-page-state %s target=%u currentTab=%u sharedPage=%u transition=%u uiIndex=%u selectFlag=%u panel=%u extra=%u",
+        phase ? phase : "?",
+        (unsigned)targetTab,
+        (unsigned)ReadSorterProjectDword(0x40edd4),
+        (unsigned)ReadSorterProjectDword(0x2fd650),
+        (unsigned)ReadSorterProjectDword(0x30de48),
+        (unsigned)ReadSorterProjectIndirectDword(0x410a8c),
+        (unsigned)ReadSorterProjectIndirectDword(0x410a50),
+        (unsigned)ReadSorterProjectIndirectDword(0x410688),
+        (unsigned)ReadSorterProjectIndirectDword(0x410a74));
+}
+
+static bool IsHardBlockedSorterCode(const char* code)
+{
+    return _stricmp(code, "box") == 0
+        || _stricmp(code, "tbk") == 0
+        || _stricmp(code, "ibk") == 0;
+}
+
+static bool IsSorterRuneCode(const char* code)
+{
+    if (!code || code[0] != 'r') return false;
+    if (!isdigit((unsigned char)code[1]) || !isdigit((unsigned char)code[2])) return false;
+    if (code[3] != '\0' && !(_stricmp(code + 3, "s") == 0)) return false;
+    int rune = (code[1] - '0') * 10 + (code[2] - '0');
+    return rune >= 1 && rune <= 33;
+}
+
+static bool IsSorterMapCode(const char* code)
+{
+    if (!code || code[0] != 't' || !isdigit((unsigned char)code[1])) return false;
+    if (isdigit((unsigned char)code[2]) && code[3] == '\0') {
+        int group = code[1] - '0';
+        int index = code[2] - '0';
+        return group >= 1 && group <= 6 && index >= 1;
+    }
+    if (code[1] == '3' && (code[2] == 'a' || code[2] == 'A' || code[2] == 'b' || code[2] == 'B') && code[3] == '\0') {
+        return true;
+    }
+    return false;
+}
+
+static bool CodeInList(const char* code, const char* const* values, size_t count)
+{
+    if (!code) return false;
+    for (size_t i = 0; i < count; ++i) {
+        if (_stricmp(code, values[i]) == 0) return true;
+    }
+    return false;
+}
+
+static bool CodeInListOrStacked(const char* code, const char* const* values, size_t count)
+{
+    if (CodeInList(code, values, count)) return true;
+    size_t len = code ? strlen(code) : 0;
+    if (len < 4 || code[len - 1] != 's') return false;
+    char base[16] = {};
+    if (len >= sizeof(base)) return false;
+    memcpy(base, code, len - 1);
+    base[len - 1] = '\0';
+    return CodeInList(base, values, count);
+}
+
+static bool IsSorterGemCode(const char* code)
+{
+    static const char* const gemCodes[] = {
+        "gzv", "glw", "glg", "glr", "glb", "gly", "skl",
+        "gpv", "gpw", "gpg", "gpr", "gpb", "gpy", "skz",
+    };
+    return CodeInListOrStacked(code, gemCodes, sizeof(gemCodes) / sizeof(gemCodes[0]));
+}
+
+static bool IsSorterGlyphCode(const char* code)
+{
+    static const char* const glyphCodes[] = {
+        "scnm", "sccn", "scas", "scmo", "schr",
+    };
+    return CodeInListOrStacked(code, glyphCodes, sizeof(glyphCodes) / sizeof(glyphCodes[0]));
+}
+
+static bool IsSorterChiselCode(const char* code)
+{
+    static const char* const chiselCodes[] = {
+        "ccsl", "ccsa", "ccpr", "ccpl",
+    };
+    return CodeInListOrStacked(code, chiselCodes, sizeof(chiselCodes) / sizeof(chiselCodes[0]));
+}
+
+static bool CodeStartsWith(const char* code, const char* prefix)
+{
+    if (!code || !prefix) return false;
+    size_t prefixLen = strlen(prefix);
+    return _strnicmp(code, prefix, prefixLen) == 0;
+}
+
+static bool IsSorterKnownMaterialCode(const char* code)
+{
+    static const char* const materialCodes[] = {
+        "mfo", "dvo", "sor", "exo", "sror", "ooe", "wss", "cwss", "csor", "etor",
+        "ooal", "hfcr",
+        "dcbl", "dcho", "dcso",
+        "rtmo", "rtmv", "cm2f",
+        "lucb", "lucc", "lucd",
+        "lbox",
+        "crfb", "crfc", "crfh", "crfs", "crfv", "crfu", "crfp",
+        "tes", "ceh", "bet", "fed", "pk1", "pk2", "pk3",
+        "dhn", "bey", "mbr", "rvs", "rvl", "jewf",
+    };
+    return CodeInListOrStacked(code, materialCodes, sizeof(materialCodes) / sizeof(materialCodes[0]));
+}
+
+static bool IsSorterBlockedMaterialTabCode(const char* code)
+{
+    static const char* const blockedCodes[] = {
+        "troo", "troe", "tror", "troa",
+        "scnm", "sccn", "scas", "scmo", "schr",
+        "ccsl", "ccsa", "ccpr", "ccpl",
+        "toa",
+        "oroh", "hfmx", "lsvl",
+        "ascc", "assc",
+    };
+    return CodeInListOrStacked(code, blockedCodes, sizeof(blockedCodes) / sizeof(blockedCodes[0]))
+        || CodeStartsWith(code, "hor")
+        || CodeStartsWith(code, "as");
+}
+
+static bool IsSorterGenericMaterialStackCode(const char* code)
+{
+    return CodeStartsWith(code, "flp");
+}
+
+static bool MaterialDisplayContainsAny(const char* displayName, const char* const* values, size_t count)
+{
+    if (!displayName || !displayName[0]) return false;
+    for (size_t i = 0; i < count; ++i) {
+        if (NormalizedContains(displayName, values[i])) return true;
+    }
+    return false;
+}
+
+static bool IsSorterBlockedMaterialTabDisplayName(const char* displayName)
+{
+    static const char* const blockedNames[] = {
+        "terror of",
+        "vision of terror",
+        "eye of terror",
+        "horn of terror",
+        "heart of terror",
+        "glyph",
+        "chisel",
+        "token of absolution",
+        "orb of horizons",
+        "cindersoul cluster",
+        "vial of lightsong",
+        "hatred orb",
+        "ascendancy",
+        "soulstone of might",
+        "ascendancy soulstone",
+    };
+    return MaterialDisplayContainsAny(displayName, blockedNames, sizeof(blockedNames) / sizeof(blockedNames[0]));
+}
+
+static bool IsSorterExplicitMaterialTabDisplayName(const char* displayName)
+{
+    static const char* const exactMaterialNames[] = {
+        "orb of chance",
+        "chance orb",
+        "chance shard",
+        "demonic cube",
+        "larzuk puzzlebox",
+        "larzuk s puzzlebox",
+        "larzuks puzzlebox",
+        "blood craft infusion",
+        "blood crafting infusion",
+        "caster craft infusion",
+        "caster crafting infusion",
+        "hitpower craft infusion",
+        "hitpower crafting infusion",
+        "safety craft infusion",
+        "safety crafting infusion",
+        "vampiric craft infusion",
+        "vampiric crafting infusion",
+        "bountiful craft infusion",
+        "bountiful crafting infusion",
+        "brilliant craft infusion",
+        "brilliant crafting infusion",
+        "catalyst shard",
+        "infused angelic orb",
+        "infused zakarum orb",
+        "infused horadrim orb",
+        "key of terror",
+        "key of hate",
+        "key of destruction",
+    };
+    if (IsSorterBlockedMaterialTabDisplayName(displayName)) return false;
+    return MaterialDisplayContainsAny(displayName, exactMaterialNames, sizeof(exactMaterialNames) / sizeof(exactMaterialNames[0]));
+}
+
+static bool IsSorterKnownMaterialDisplayName(const char* displayName)
+{
+    static const char* const materialNames[] = {
+        "rune",
+        "amethyst", "diamond", "emerald", "ruby", "sapphire", "topaz", "skull",
+        "perfect amethyst", "perfect diamond", "perfect emerald", "perfect ruby",
+        "perfect sapphire", "perfect topaz", "perfect skull",
+        "p amethyst", "p diamond", "p emerald", "p ruby", "p sapphire", "p topaz", "p skull",
+        "mythic orb", "divine orb", "sacred orb", "eternal orb", "exalted orb",
+        "chaos orb", "orb of alchemy", "orb of extraction", "orb of fortification",
+        "worldstone shard", "tainted worldstone shard",
+        "crystallised cindersoul", "crystallized cindersoul",
+        "jewel fragment", "jewel fragments", "prime evil soul", "pure demonic essence",
+        "black soulstone", "trang oul jawbone", "trang oul s jawbone",
+        "splinter of the void", "hellfire ashes", "demonic insignia",
+        "talisman of transgression", "flesh of malic",
+        "demonic cube", "horadrim scarab", "larzuk puzzlebox",
+        "larzuk s puzzlebox", "larzuks puzzlebox",
+        "blood craft infusion", "blood crafting infusion",
+        "caster craft infusion", "caster crafting infusion",
+        "hitpower craft infusion", "hitpower crafting infusion",
+        "safety craft infusion", "safety crafting infusion",
+        "vampiric craft infusion", "vampiric crafting infusion",
+        "bountiful craft infusion", "bountiful crafting infusion",
+        "brilliant craft infusion", "brilliant crafting infusion",
+        "catalyst shard",
+        "infused angelic orb", "infused zakarum orb", "infused horadrim orb",
+        "rejuv", "rejuvenation potion", "full rejuvenation potion",
+        "twisted essence", "charged essence", "burning essence", "festering essence",
+        "sigil fragment", "chance shard", "orb of chance", "chance orb",
+        "key of terror", "key of hate", "key of destruction",
+    };
+    if (NormalizedContains(displayName, "fate")) return false;
+    if (IsSorterBlockedMaterialTabDisplayName(displayName)) return false;
+    return MaterialDisplayContainsAny(displayName, materialNames, sizeof(materialNames) / sizeof(materialNames[0]));
+}
+
+static bool IsSorterCharmItem(const StashSorterCandidate& item)
+{
+    return _stricmp(item.codeText, "cm1") == 0
+        || _stricmp(item.codeText, "cm2") == 0
+        || _stricmp(item.codeText, "cm3") == 0
+        || _stricmp(item.codeText, "cm4") == 0
+        || NormalizedContains(item.displayName, "charm");
+}
+
+static bool IsSorterJewelItem(const StashSorterCandidate& item)
+{
+    return _stricmp(item.codeText, "jew") == 0
+        || _stricmp(item.codeText, "jwl") == 0
+        || NormalizedContains(item.displayName, "jewel");
+}
+
+static bool IsSorterRunewordItem(const StashSorterCandidate& item)
+{
+    return (item.flags & IFLAG_RUNEWORD) != 0
+        || NormalizedContains(item.displayName, "runeword");
+}
+
+static bool IsSorterNormalBaseQuality(uint32_t quality)
+{
+    return quality == 1 || quality == 2 || quality == 3;
+}
+
+static bool IsSorterSpecialCatalogItem(const StashSorterCandidate& item)
+{
+    return IsSorterRuneCode(item.codeText)
+        || IsSorterMapCode(item.codeText)
+        || CodeStartsWith(item.codeText, "fa")
+        || CodeStartsWith(item.codeText, "es")
+        || CodeStartsWith(item.codeText, "hor")
+        || CodeStartsWith(item.codeText, "as")
+        || IsSorterGlyphCode(item.codeText)
+        || IsSorterChiselCode(item.codeText)
+        || IsSorterCharmItem(item)
+        || IsSorterJewelItem(item)
+        || NormalizedContains(item.displayName, "fate")
+        || NormalizedContains(item.displayName, "essence")
+        || NormalizedContains(item.displayName, "hatred orb")
+        || NormalizedContains(item.displayName, "glyph")
+        || NormalizedContains(item.displayName, "chisel")
+        || NormalizedContains(item.displayName, " map");
+}
+
+static bool IsSorterNormalBaseItem(const StashSorterCandidate& item)
+{
+    if (!IsSorterNormalBaseQuality(item.quality)) return false;
+    if (IsSorterRunewordItem(item)) return false;
+    if (IsSorterSpecialCatalogItem(item)) return false;
+    if (IsSorterKnownMaterialCode(item.codeText)) return false;
+    if (IsSorterGenericMaterialStackCode(item.codeText) && IsSorterKnownMaterialDisplayName(item.displayName)) return false;
+    if (IsSorterExplicitMaterialTabDisplayName(item.displayName)) return false;
+    return true;
+}
+
+static bool MatchesSorterCategory(const StashSorterCandidate& item, const char* category)
+{
+    char cat[64] = {};
+    LowerCopy(category, cat, sizeof(cat));
+
+    if (strcmp(cat, "runes") == 0) return IsSorterRuneCode(item.codeText);
+    if (strcmp(cat, "maps") == 0) return IsSorterMapCode(item.codeText)
+        || NormalizedContains(item.displayName, " map");
+    if (strcmp(cat, "fatecards") == 0) {
+        return CodeStartsWith(item.codeText, "fa")
+            || NormalizedContains(item.displayName, "fate")
+            || NormalizedContains(item.displayName, "t0 fate")
+            || NormalizedContains(item.displayName, "t1 fate")
+            || NormalizedContains(item.displayName, "t2 fate")
+            || NormalizedContains(item.displayName, "t3 fate")
+            || NormalizedContains(item.displayName, "t4 fate")
+            || NormalizedContains(item.displayName, "t5 fate");
+    }
+    if (strcmp(cat, "essences") == 0) return CodeStartsWith(item.codeText, "es")
+        || NormalizedContains(item.displayName, "essence of")
+        || NormalizedContains(item.displayName, "greater essence")
+        || NormalizedContains(item.displayName, "perfect essence")
+        || NormalizedContains(item.displayName, "[essence]");
+    if (strcmp(cat, "glyphs") == 0) return IsSorterGlyphCode(item.codeText)
+        || NormalizedContains(item.displayName, "glyph");
+    if (strcmp(cat, "chisels") == 0) return IsSorterChiselCode(item.codeText)
+        || NormalizedContains(item.displayName, "chisel");
+    if (strcmp(cat, "uniques") == 0) return item.quality == QUALITY_UNIQUE;
+    if (strcmp(cat, "sets") == 0) return item.quality == QUALITY_SET;
+    if (strcmp(cat, "runewords") == 0) return IsSorterRunewordItem(item);
+    if (strcmp(cat, "normalitems") == 0) return IsSorterNormalBaseItem(item);
+    if (strcmp(cat, "magicitems") == 0) return item.quality == QUALITY_MAGIC && !IsSorterCharmItem(item) && !IsSorterJewelItem(item);
+    if (strcmp(cat, "rareitems") == 0) return item.quality == QUALITY_RARE && !IsSorterCharmItem(item) && !IsSorterJewelItem(item);
+    if (strcmp(cat, "charms") == 0) return IsSorterCharmItem(item);
+    if (strcmp(cat, "jewels") == 0) return IsSorterJewelItem(item);
+    if (strcmp(cat, "hatredorbs") == 0) return CodeStartsWith(item.codeText, "hor")
+        || NormalizedContains(item.displayName, "hatred orb");
+    if (strcmp(cat, "ascendancy") == 0) return CodeStartsWith(item.codeText, "as") || _stricmp(item.codeText, "ascc") == 0 || _stricmp(item.codeText, "assc") == 0;
+
+    return false;
+}
+
+static bool IsSorterAutomaticMaterialTabItem(const StashSorterCandidate& item)
+{
+    if (IsSorterBlockedMaterialTabCode(item.codeText) || IsSorterBlockedMaterialTabDisplayName(item.displayName)) {
+        return false;
+    }
+    return IsSorterRuneCode(item.codeText)
+        || IsSorterGemCode(item.codeText)
+        || IsSorterKnownMaterialCode(item.codeText)
+        || IsSorterExplicitMaterialTabDisplayName(item.displayName)
+        || (IsSorterGenericMaterialStackCode(item.codeText) && IsSorterKnownMaterialDisplayName(item.displayName));
+}
+
+static bool IsBlacklistedForSorter(const StashSorterCandidate& item)
+{
+    if (IsHardBlockedSorterCode(item.codeText)) return true;
+    for (const std::string& blocked : g_stashSorterConfig.blacklist) {
+        if (NormalizedEquals(item.displayName, blocked.c_str())) return true;
+        if (_stricmp(item.codeText, blocked.c_str()) == 0) return true;
+    }
+    return false;
+}
+
+static bool RuleMatchesSorterItem(const StashSorterRule& rule, const StashSorterCandidate& item)
+{
+    if (!rule.enabled || !rule.matchValue[0]) return false;
+
+    if (rule.matchType == SORT_MATCH_ITEM_CODE) {
+        char wanted[32] = {};
+        LowerCopy(rule.matchValue, wanted, sizeof(wanted));
+        return _stricmp(item.codeText, wanted) == 0;
+    }
+    if (rule.matchType == SORT_MATCH_ITEM_NAME) {
+        return NormalizedEquals(item.displayName, rule.matchValue);
+    }
+    return MatchesSorterCategory(item, rule.matchValue);
+}
+
+static bool AssignSorterTarget(StashSorterCandidate* item)
+{
+    if (!item || IsBlacklistedForSorter(*item)) return false;
+    if (g_stashSorterConfig.automaticMaterialsTabEnabled && IsSorterAutomaticMaterialTabItem(*item)) {
+        item->targetTab = SOE_STASH_SORTER_MATERIALS_TAB_TARGET;
+        return true;
+    }
+    for (const StashSorterRule& rule : g_stashSorterConfig.rules) {
+        if (RuleMatchesSorterItem(rule, *item)) {
+            item->targetTab = rule.targetTab;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void BuildSorterFallbackDisplayName(StashSorterCandidate* item)
+{
+    if (!item) return;
+    if (item->displayName[0]) return;
+
+    const char* quality =
+        IsSorterRunewordItem(*item) ? "Runeword" :
+        item->quality == QUALITY_UNIQUE ? "Unique" :
+        item->quality == QUALITY_SET ? "Set" :
+        item->quality == QUALITY_RARE ? "Rare" :
+        item->quality == QUALITY_MAGIC ? "Magic" :
+        item->quality == 3 ? "Superior" :
+        item->quality == 2 ? "Normal" :
+        item->quality == 1 ? "Inferior" :
+        "Item";
+    snprintf(item->displayName, sizeof(item->displayName), "%s %s", quality, item->codeText);
+}
+
+static bool IsStashSorterCellProtected(uint32_t x, uint32_t y)
+{
+    if (x >= SORTER_BACKPACK_GRID_WIDTH || y >= SORTER_BACKPACK_MAX_GRID_HEIGHT) return true;
+    return g_stashSorterConfig.protectedCells[y][x];
+}
+
+static bool IsLikelySorterInventoryGridItem(const StashSorterCandidate& item)
+{
+    if (!item.codeText[0]) return false;
+    if (item.gridX >= SORTER_BACKPACK_GRID_WIDTH || item.gridY >= SORTER_BACKPACK_LOGICAL_HEIGHT) return false;
+    if (IsStashSorterCellProtected(item.gridX, item.gridY)) return false;
+    if (IsHardBlockedSorterCode(item.codeText)) return false;
+    return true;
+}
+
+static bool TryReadStashSorterInventoryGrid(
+    uintptr_t playerUnit,
+    uint32_t gridIndex,
+    uintptr_t* outGrid,
+    uint32_t* outWidth,
+    uint32_t* outHeight,
+    uintptr_t* outItems)
+{
+    uintptr_t inventory = 0;
+    if (!TryReadStashSorterPtr(playerUnit + UNIT_INVENTORY, &inventory) || !inventory) return false;
+
+    uintptr_t grids = 0;
+    if (!TryReadStashSorterPtr(inventory + INVENTORY_GRIDS, &grids) || !grids) return false;
+
+    uintptr_t grid = grids + (uintptr_t)gridIndex * INVENTORY_GRID_SIZE;
+    if (IsBadReadPtr((void*)grid, INVENTORY_GRID_SIZE)) return false;
+
+    uint8_t width = 0;
+    uint8_t height = 0;
+    uintptr_t items = 0;
+    TryReadStashSorterByte(grid + INVENTORY_GRID_WIDTH, &width);
+    TryReadStashSorterByte(grid + INVENTORY_GRID_HEIGHT, &height);
+    TryReadStashSorterPtr(grid + INVENTORY_GRID_PP_ITEMS, &items);
+    if (!width || !height || width > 20 || height > 20 || !items) return false;
+    if (IsBadReadPtr((void*)items, (size_t)width * (size_t)height * sizeof(uintptr_t))) return false;
+
+    if (outGrid) *outGrid = grid;
+    if (outWidth) *outWidth = width;
+    if (outHeight) *outHeight = height;
+    if (outItems) *outItems = items;
+    return true;
+}
+
+static bool FindStashSorterItemInGrid(
+    uintptr_t playerUnit,
+    uint32_t gridIndex,
+    uintptr_t itemUnit,
+    uint32_t* outX,
+    uint32_t* outY,
+    uint32_t firstRow,
+    uint32_t rowCount,
+    uint32_t* outWidth,
+    uint32_t* outHeight)
+{
+    uintptr_t items = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (!TryReadStashSorterInventoryGrid(playerUnit, gridIndex, nullptr, &width, &height, &items)) return false;
+    if (firstRow >= height) return false;
+    uint32_t scanEnd = height;
+    if (rowCount > 0 && firstRow + rowCount < scanEnd) scanEnd = firstRow + rowCount;
+
+    for (uint32_t y = firstRow; y < scanEnd; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+            uintptr_t occupant = 0;
+            uintptr_t cell = items + ((uintptr_t)y * width + x) * sizeof(uintptr_t);
+            if (!TryReadStashSorterPtr(cell, &occupant)) continue;
+            if (occupant == itemUnit) {
+                if (outX) *outX = x;
+                if (outY) *outY = y;
+                if (outWidth) *outWidth = width;
+                if (outHeight) *outHeight = height;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static uint32_t StashSorterBackpackFirstRow(uint32_t gridHeight)
+{
+    (void)gridHeight;
+    return SORTER_BACKPACK_FIRST_ROW;
+}
+
+static bool FindStashSorterItemInBackpackRows(
+    uintptr_t playerUnit,
+    uint32_t gridIndex,
+    uintptr_t itemUnit,
+    uint32_t* outX,
+    uint32_t* outY,
+    uint32_t* outWidth,
+    uint32_t* outHeight)
+{
+    uintptr_t items = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    if (!TryReadStashSorterInventoryGrid(playerUnit, gridIndex, nullptr, &width, &height, &items)) return false;
+    if (outWidth) *outWidth = width;
+    if (outHeight) *outHeight = height;
+    return FindStashSorterItemInGrid(
+        playerUnit,
+        gridIndex,
+        itemUnit,
+        outX,
+        outY,
+        StashSorterBackpackFirstRow(height),
+        SORTER_BACKPACK_LOGICAL_HEIGHT,
+        outWidth,
+        outHeight);
+}
+
+static bool FindStashSorterBackpackGrid(
+    uintptr_t playerUnit,
+    uint32_t* outGridIndex,
+    uintptr_t* outGrid,
+    uint32_t* outWidth,
+    uint32_t* outHeight,
+    uintptr_t* outItems)
+{
+    bool found = false;
+    uint32_t bestGridIndex = 0;
+    uintptr_t bestGrid = 0;
+    uintptr_t bestItems = 0;
+    uint32_t bestWidth = 0;
+    uint32_t bestHeight = 0;
+    for (uint32_t gridIndex = 0; gridIndex < SORTER_MAX_GRID_PROBE_COUNT; ++gridIndex) {
+        uintptr_t grid = 0;
+        uintptr_t items = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        if (!TryReadStashSorterInventoryGrid(playerUnit, gridIndex, &grid, &width, &height, &items)) continue;
+        if (width == SORTER_BACKPACK_GRID_WIDTH && height >= SORTER_BACKPACK_LOGICAL_HEIGHT && height <= SORTER_BACKPACK_MAX_GRID_HEIGHT) {
+            if (!found || height < bestHeight) {
+                found = true;
+                bestGridIndex = gridIndex;
+                bestGrid = grid;
+                bestItems = items;
+                bestWidth = width;
+                bestHeight = height;
+            }
+        }
+    }
+    if (!found) return false;
+    if (outGridIndex) *outGridIndex = bestGridIndex;
+    if (outGrid) *outGrid = bestGrid;
+    if (outWidth) *outWidth = bestWidth;
+    if (outHeight) *outHeight = bestHeight;
+    if (outItems) *outItems = bestItems;
+    return true;
+}
+
+static void BuildStashSorterGridSummary(uintptr_t playerUnit, char* out, size_t outSize)
+{
+    if (!out || outSize == 0) return;
+    out[0] = '\0';
+    size_t used = 0;
+    for (uint32_t gridIndex = 0; gridIndex < SORTER_MAX_GRID_PROBE_COUNT; ++gridIndex) {
+        uintptr_t grid = 0;
+        uintptr_t items = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        bool ok = TryReadStashSorterInventoryGrid(playerUnit, gridIndex, &grid, &width, &height, &items);
+        int written = snprintf(
+            out + used,
+            used < outSize ? outSize - used : 0,
+            "%s%u:%s%ux%u@%p",
+            used ? " " : "",
+            (unsigned)gridIndex,
+            ok ? "" : "bad/",
+            (unsigned)width,
+            (unsigned)height,
+            (void*)items);
+        if (written <= 0) break;
+        used += (size_t)written;
+        if (used + 1 >= outSize) break;
+    }
+}
+
+static bool FindStashSorterItemAnyGrid(
+    uintptr_t playerUnit,
+    uintptr_t itemUnit,
+    uint32_t* outGridIndex,
+    uint32_t* outX,
+    uint32_t* outY,
+    uint32_t* outWidth,
+    uint32_t* outHeight)
+{
+    for (uint32_t gridIndex = 0; gridIndex < 8; ++gridIndex) {
+        if (FindStashSorterItemInGrid(playerUnit, gridIndex, itemUnit, outX, outY, 0, 0, outWidth, outHeight)) {
+            if (outGridIndex) *outGridIndex = gridIndex;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void ReadStashSorterInventoryItems(uintptr_t playerUnit, std::vector<StashSorterCandidate>* out)
+{
+    if (!out) return;
+    out->clear();
+
+    uint32_t backpackGridIndex = 0xffffffffu;
+    uintptr_t backpackGrid = 0;
+    uintptr_t backpackItems = 0;
+    uint32_t backpackWidth = 0;
+    uint32_t backpackHeight = 0;
+    if (!FindStashSorterBackpackGrid(
+            playerUnit,
+            &backpackGridIndex,
+            &backpackGrid,
+            &backpackWidth,
+            &backpackHeight,
+            &backpackItems)) {
+        char summary[512] = {};
+        BuildStashSorterGridSummary(playerUnit, summary, sizeof(summary));
+        AppendStashSorterLog("aborted: could not find %u-wide backpack grid with %u-%u rows; grids=%s",
+            (unsigned)SORTER_BACKPACK_GRID_WIDTH,
+            (unsigned)SORTER_BACKPACK_LOGICAL_HEIGHT,
+            (unsigned)SORTER_BACKPACK_MAX_GRID_HEIGHT,
+            summary);
+        return;
+    }
+
+    uint32_t scanStart = StashSorterBackpackFirstRow(backpackHeight);
+    uint32_t scanRows = backpackHeight - scanStart;
+    if (scanRows > SORTER_BACKPACK_LOGICAL_HEIGHT) scanRows = SORTER_BACKPACK_LOGICAL_HEIGHT;
+    AppendStashSorterLog("inventory source grid=%u memoryDims=%ux%u logicalDims=%ux%u scanStart=%u scanRows=%u grid=%p items=%p",
+        (unsigned)backpackGridIndex,
+        (unsigned)backpackWidth,
+        (unsigned)backpackHeight,
+        (unsigned)SORTER_BACKPACK_GRID_WIDTH,
+        (unsigned)SORTER_BACKPACK_LOGICAL_HEIGHT,
+        (unsigned)scanStart,
+        (unsigned)scanRows,
+        (void*)backpackGrid,
+        (void*)backpackItems);
+
+    std::vector<uintptr_t> seenUnits;
+    for (uint32_t y = scanStart; y < scanStart + scanRows; ++y) {
+        for (uint32_t x = 0; x < backpackWidth; ++x) {
+            if (IsStashSorterCellProtected(x, y)) continue;
+
+            uintptr_t item = 0;
+            uintptr_t cell = backpackItems + ((uintptr_t)y * backpackWidth + x) * sizeof(uintptr_t);
+            if (!TryReadStashSorterPtr(cell, &item) || !item) continue;
+            bool seen = false;
+            for (uintptr_t existing : seenUnits) {
+                if (existing == item) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (seen) continue;
+            seenUnits.push_back(item);
+
+            if (IsBadReadPtr((void*)item, UNIT_INVENTORY + sizeof(uintptr_t))) continue;
+
+        uint32_t unitType = 0;
+        uint32_t unitId = 0;
+        if (!TryReadStashSorterDword(item + UNIT_TYPE, &unitType) || unitType != 4) continue;
+        TryReadStashSorterDword(item + UNIT_ID, &unitId);
+
+        uintptr_t itemData = 0;
+        uintptr_t path = 0;
+        if (!TryReadStashSorterPtr(item + UNIT_ITEMDATA, &itemData) || !itemData) continue;
+        TryReadStashSorterPtr(item + UNIT_PATH, &path);
+
+        StashSorterCandidate candidate = {};
+        candidate.unit = item;
+        candidate.unitId = unitId;
+        candidate.gridIndex = backpackGridIndex;
+        candidate.gridX = x;
+        candidate.gridY = y;
+        TryReadStashSorterDword(itemData + ITEM_QUALITY, &candidate.quality);
+        TryReadStashSorterDword(itemData + ITEM_FLAGS, &candidate.flags);
+        TryReadStashSorterDword(itemData + ITEM_PAGE, &candidate.page);
+        TryReadStashSorterByte(itemData + ITEM_NODE_PAGE, &candidate.nodePage);
+        TryReadStashSorterByte(itemData + ITEM_BODY_LOCATION, &candidate.bodyLocation);
+        TryReadStashSorterByte(itemData + ITEM_INVENTORY_PAGE, &candidate.inventoryPage);
+        candidate.code = ItemCodeForUnit(item);
+        ItemCodeToString(candidate.code, candidate.codeText, sizeof(candidate.codeText));
+        if (!IsLikelySorterInventoryGridItem(candidate)) continue;
+
+            if (!TryResolveUniqueSetItemName(item, candidate.quality, candidate.displayName, sizeof(candidate.displayName))) {
+                TryResolveItemDisplayName(item, candidate.displayName, sizeof(candidate.displayName));
+            }
+            BuildSorterFallbackDisplayName(&candidate);
+            if (AssignSorterTarget(&candidate)) {
+                AppendStashSorterLog("eligible inventory %s code=%s quality=%u/%s flags=%08x id=%u cell=%u,%u grid=%u dims=%ux%u page=%u node=%u body=%u inv=%u target=%u",
+                    candidate.displayName,
+                    candidate.codeText,
+                    (unsigned)candidate.quality,
+                    QualityString(candidate.quality),
+                    (unsigned)candidate.flags,
+                    (unsigned)candidate.unitId,
+                    (unsigned)candidate.gridX,
+                    (unsigned)candidate.gridY,
+                    (unsigned)candidate.gridIndex,
+                    (unsigned)backpackWidth,
+                    (unsigned)backpackHeight,
+                    (unsigned)candidate.page,
+                    (unsigned)candidate.nodePage,
+                    (unsigned)candidate.bodyLocation,
+                    (unsigned)candidate.inventoryPage,
+                    (unsigned)candidate.targetTab);
+                out->push_back(candidate);
+            } else {
+                AppendStashSorterLog("ignored inventory unmatched %s code=%s quality=%u/%s flags=%08x id=%u cell=%u,%u grid=%u page=%u node=%u body=%u inv=%u",
+                    candidate.displayName,
+                    candidate.codeText,
+                    (unsigned)candidate.quality,
+                    QualityString(candidate.quality),
+                    (unsigned)candidate.flags,
+                    (unsigned)candidate.unitId,
+                    (unsigned)candidate.gridX,
+                    (unsigned)candidate.gridY,
+                    (unsigned)candidate.gridIndex,
+                    (unsigned)candidate.page,
+                    (unsigned)candidate.nodePage,
+                    (unsigned)candidate.bodyLocation,
+                    (unsigned)candidate.inventoryPage);
+            }
+        }
+    }
+}
+
+static bool FindStashSorterItemById(uintptr_t playerUnit, uint32_t unitId, StashSorterCandidate* out)
+{
+    uintptr_t inventory = 0;
+    if (!TryReadStashSorterPtr(playerUnit + UNIT_INVENTORY, &inventory) || !inventory) return false;
+
+    uintptr_t item = 0;
+    if (!TryReadStashSorterPtr(inventory + INVENTORY_FIRST_ITEM, &item) || !item) return false;
+
+    int guard = 0;
+    while (item && guard++ < 256) {
+        if (IsBadReadPtr((void*)item, UNIT_ID + sizeof(uint32_t))) break;
+        uint32_t currentId = 0;
+        TryReadStashSorterDword(item + UNIT_ID, &currentId);
+
+        uintptr_t itemData = 0;
+        uintptr_t path = 0;
+        uintptr_t next = 0;
+        if (!TryReadStashSorterPtr(item + UNIT_ITEMDATA, &itemData) || !itemData) break;
+        if (currentId == unitId) {
+            StashSorterCandidate candidate = {};
+            candidate.unit = item;
+            candidate.unitId = currentId;
+            TryReadStashSorterDword(itemData + ITEM_QUALITY, &candidate.quality);
+            TryReadStashSorterDword(itemData + ITEM_FLAGS, &candidate.flags);
+            TryReadStashSorterDword(itemData + ITEM_PAGE, &candidate.page);
+            TryReadStashSorterByte(itemData + ITEM_NODE_PAGE, &candidate.nodePage);
+            TryReadStashSorterByte(itemData + ITEM_BODY_LOCATION, &candidate.bodyLocation);
+            TryReadStashSorterByte(itemData + ITEM_INVENTORY_PAGE, &candidate.inventoryPage);
+            if (TryReadStashSorterPtr(item + UNIT_PATH, &path) && path) {
+                TryReadStashSorterDword(path + ITEM_PATH_X, &candidate.gridX);
+                TryReadStashSorterDword(path + ITEM_PATH_Y, &candidate.gridY);
+            }
+            candidate.code = ItemCodeForUnit(item);
+            ItemCodeToString(candidate.code, candidate.codeText, sizeof(candidate.codeText));
+            if (out) *out = candidate;
+            return true;
+        }
+        if (!TryReadStashSorterPtr(itemData + ITEM_NEXT, &next)) break;
+        item = next;
+    }
+    return false;
+}
+
+static bool SorterCandidateLocationChanged(const StashSorterCandidate& before, const StashSorterCandidate& after)
+{
+    return before.gridX != after.gridX
+        || before.gridY != after.gridY
+        || before.page != after.page
+        || before.nodePage != after.nodePage
+        || before.bodyLocation != after.bodyLocation
+        || before.inventoryPage != after.inventoryPage;
+}
+
+static void CopySorterCandidateLabel(StashSorterCandidate* dst, const StashSorterCandidate& src)
+{
+    if (!dst) return;
+    snprintf(dst->displayName, sizeof(dst->displayName), "%s", src.displayName);
+    snprintf(dst->codeText, sizeof(dst->codeText), "%s", src.codeText);
+    dst->targetTab = src.targetTab;
+}
+
+static bool SorterGridCellToScreenAndClientPoint(
+    HWND hwnd,
+    double baseLeft,
+    double baseTop,
+    double cellWidth,
+    double cellHeight,
+    uint32_t gridX,
+    uint32_t gridY,
+    POINT* outScreen,
+    POINT* outClient)
+{
+    if (!outScreen && !outClient) return false;
+    RECT windowRect = {};
+    if (!GetWindowRect(hwnd, &windowRect)) return false;
+    int width = windowRect.right - windowRect.left;
+    int height = windowRect.bottom - windowRect.top;
+    if (width <= 0 || height <= 0) return false;
+
+    double safeCellWidth = ClampSorterDouble(cellWidth, 29.0, 8.0, 120.0);
+    double safeCellHeight = ClampSorterDouble(cellHeight, 29.0, 8.0, 120.0);
+    double centerX = baseLeft + ((double)gridX + 0.5) * safeCellWidth;
+    double centerY = baseTop + ((double)gridY + 0.5) * safeCellHeight;
+
+    // The calibration overlay and app hover test are positioned against the
+    // visible Diablo II window, not the client rect. Compute the same screen
+    // point here, then convert it back to client coordinates for game messages.
+    double sx = (double)width / 800.0;
+    double sy = (double)height / 600.0;
+    POINT screenPoint = {};
+    screenPoint.x = windowRect.left + (int)(centerX * sx + 0.5);
+    screenPoint.y = windowRect.top + (int)(centerY * sy + 0.5);
+    if (screenPoint.x < windowRect.left || screenPoint.y < windowRect.top || screenPoint.x >= windowRect.right || screenPoint.y >= windowRect.bottom) return false;
+
+    POINT clientPoint = screenPoint;
+    if (!ScreenToClient(hwnd, &clientPoint)) return false;
+    if (outScreen) *outScreen = screenPoint;
+    if (outClient) *outClient = clientPoint;
+    return true;
+}
+
+static bool SorterGridCellToClientPoint(
+    HWND hwnd,
+    double baseLeft,
+    double baseTop,
+    double cellWidth,
+    double cellHeight,
+    uint32_t gridX,
+    uint32_t gridY,
+    POINT* out)
+{
+    return SorterGridCellToScreenAndClientPoint(
+        hwnd,
+        baseLeft,
+        baseTop,
+        cellWidth,
+        cellHeight,
+        gridX,
+        gridY,
+        nullptr,
+        out);
+}
+
+static bool InventoryGridCellToScreenAndClientPoint(HWND hwnd, uint32_t gridX, uint32_t gridY, POINT* outScreen, POINT* outClient)
+{
+    if (g_stashSorterConfig.calibrationEnabled) {
+        return SorterGridCellToScreenAndClientPoint(
+            hwnd,
+            g_stashSorterConfig.calibrationLeft,
+            g_stashSorterConfig.calibrationTop,
+            g_stashSorterConfig.calibrationCellWidth,
+            g_stashSorterConfig.calibrationCellHeight,
+            gridX,
+            gridY,
+            outScreen,
+            outClient);
+    }
+    return SorterGridCellToScreenAndClientPoint(hwnd, 417.0, 219.0, 29.0, 29.0, gridX, gridY, outScreen, outClient);
+}
+
+static bool InventoryGridCellToClientPoint(HWND hwnd, uint32_t gridX, uint32_t gridY, POINT* out)
+{
+    return InventoryGridCellToScreenAndClientPoint(hwnd, gridX, gridY, nullptr, out);
+}
+
+static bool SharedStashGridCellToClientPoint(HWND hwnd, uint32_t gridX, uint32_t gridY, POINT* out)
+{
+    return SorterGridCellToClientPoint(hwnd, 34.0, 85.0, 29.0, 29.0, gridX, gridY, out);
+}
+
+static bool SorterBasePointToClientPoint(HWND hwnd, double baseX, double baseY, POINT* out)
+{
+    if (!out) return false;
+    RECT client = {};
+    if (!GetClientRect(hwnd, &client)) return false;
+    int width = client.right - client.left;
+    int height = client.bottom - client.top;
+    if (width <= 0 || height <= 0) return false;
+
+    double sx = (double)width / 800.0;
+    double sy = (double)height / 600.0;
+    double scale = sx < sy ? sx : sy;
+    int uiWidth = (int)(800.0 * scale);
+    int uiHeight = (int)(600.0 * scale);
+    int leftPad = (width - uiWidth) / 2;
+    int topPad = (height - uiHeight) / 2;
+
+    out->x = leftPad + (int)(baseX * scale);
+    out->y = topPad + (int)(baseY * scale);
+    if (out->x < 0 || out->y < 0 || out->x >= width || out->y >= height) return false;
+    return true;
+}
+
+struct StashSorterMouseSnapshot {
+    uint32_t mouseX;
+    uint32_t mouseY;
+    uint32_t baseX;
+    uint32_t baseY1;
+    uint32_t baseY2;
+    bool ok;
+};
+
+static StashSorterMouseSnapshot ReadStashSorterMouseSnapshot()
+{
+    StashSorterMouseSnapshot snapshot = {};
+    HMODULE hProject = GetModuleHandleA("ProjectDiablo.dll");
+    uintptr_t base = (uintptr_t)hProject;
+    if (!base) return snapshot;
+
+    uintptr_t ptrMouseX = 0;
+    uintptr_t ptrMouseY = 0;
+    uintptr_t ptrBaseX = 0;
+    uintptr_t ptrBaseY1 = 0;
+    uintptr_t ptrBaseY2 = 0;
+    if (!TryReadStashSorterPtr(base + 0x41016c, &ptrMouseX)) return snapshot;
+    if (!TryReadStashSorterPtr(base + 0x4101f8, &ptrMouseY)) return snapshot;
+    TryReadStashSorterPtr(base + 0x4100a0, &ptrBaseX);
+    TryReadStashSorterPtr(base + 0x4101ec, &ptrBaseY1);
+    TryReadStashSorterPtr(base + 0x4101a8, &ptrBaseY2);
+
+    snapshot.ok =
+        TryReadStashSorterDword(ptrMouseX, &snapshot.mouseX) &&
+        TryReadStashSorterDword(ptrMouseY, &snapshot.mouseY);
+    TryReadStashSorterDword(ptrBaseX, &snapshot.baseX);
+    TryReadStashSorterDword(ptrBaseY1, &snapshot.baseY1);
+    TryReadStashSorterDword(ptrBaseY2, &snapshot.baseY2);
+    return snapshot;
+}
+
+static LONG AbsLong(LONG value)
+{
+    return value < 0 ? -value : value;
+}
+
+static LONG RoundSorterDouble(double value)
+{
+    return (LONG)(value >= 0.0 ? value + 0.5 : value - 0.5);
+}
+
+static double ClampSorterScale(double scale)
+{
+    if (scale != scale || scale < 0.50 || scale > 4.00) return 1.0;
+    return scale;
+}
+
+static double ReadSorterDeviceScale(HWND hwnd, bool vertical)
+{
+    HDC dc = GetDC(hwnd);
+    if (!dc) return 1.0;
+    int dpi = GetDeviceCaps(dc, vertical ? LOGPIXELSY : LOGPIXELSX);
+    ReleaseDC(hwnd, dc);
+    if (dpi <= 0) return 1.0;
+    return ClampSorterScale((double)dpi / 96.0);
+}
+
+static void SeedSorterCursorScale(HWND hwnd)
+{
+    if (g_stashSorterCursorScaleX > 0.0 && g_stashSorterCursorScaleY > 0.0) return;
+
+    double scaleX = ReadSorterDeviceScale(hwnd, false);
+    double scaleY = ReadSorterDeviceScale(hwnd, true);
+
+    if (scaleX <= 1.01 || scaleY <= 1.01) {
+        int virtualW = GetSystemMetrics(SM_CXSCREEN);
+        int virtualH = GetSystemMetrics(SM_CYSCREEN);
+        RECT rect = {};
+        if (GetWindowRect(hwnd, &rect)) {
+            int windowW = rect.right - rect.left;
+            int windowH = rect.bottom - rect.top;
+            if (virtualW > 0 && windowW > virtualW + 8) {
+                scaleX = ClampSorterScale((double)windowW / (double)virtualW);
+            }
+            if (virtualH > 0 && windowH > virtualH + 8) {
+                scaleY = ClampSorterScale((double)windowH / (double)virtualH);
+            }
+        }
+    }
+
+    g_stashSorterCursorScaleX = scaleX;
+    g_stashSorterCursorScaleY = scaleY;
+}
+
+static POINT SorterCursorRequestForScreenPoint(HWND hwnd, POINT desired)
+{
+    SeedSorterCursorScale(hwnd);
+    double scaleX = g_stashSorterCursorScaleX > 0.0 ? g_stashSorterCursorScaleX : 1.0;
+    double scaleY = g_stashSorterCursorScaleY > 0.0 ? g_stashSorterCursorScaleY : 1.0;
+
+    POINT requested = desired;
+    if (scaleX > 1.01) requested.x = RoundSorterDouble((double)desired.x / scaleX);
+    if (scaleY > 1.01) requested.y = RoundSorterDouble((double)desired.y / scaleY);
+    return requested;
+}
+
+static bool SetSorterCursorToScreenPoint(HWND hwnd, POINT desired, const char* label)
+{
+    POINT requested = SorterCursorRequestForScreenPoint(hwnd, desired);
+    SetCursorPos(requested.x, requested.y);
+    if (!StashSorterInterruptibleSleep(8)) return false;
+
+    POINT actual = {};
+    GetCursorPos(&actual);
+    LONG dx = AbsLong(actual.x - desired.x);
+    LONG dy = AbsLong(actual.y - desired.y);
+
+    if ((dx > 4 || dy > 4) && requested.x != 0 && requested.y != 0) {
+        double observedX = ClampSorterScale((double)actual.x / (double)requested.x);
+        double observedY = ClampSorterScale((double)actual.y / (double)requested.y);
+        if (observedX > 1.01 || observedY > 1.01) {
+            g_stashSorterCursorScaleX = observedX;
+            g_stashSorterCursorScaleY = observedY;
+            requested = SorterCursorRequestForScreenPoint(hwnd, desired);
+            SetCursorPos(requested.x, requested.y);
+            if (!StashSorterInterruptibleSleep(8)) return false;
+            GetCursorPos(&actual);
+            dx = AbsLong(actual.x - desired.x);
+            dy = AbsLong(actual.y - desired.y);
+        }
+    }
+
+    if (requested.x != desired.x || requested.y != desired.y || dx > 4 || dy > 4) {
+        AppendStashSorterLog("cursor scale target=%ld,%ld set=%ld,%ld actual=%ld,%ld delta=%ld,%ld scale=%.3fx%.3f context=%s",
+            (long)desired.x,
+            (long)desired.y,
+            (long)requested.x,
+            (long)requested.y,
+            (long)actual.x,
+            (long)actual.y,
+            (long)dx,
+            (long)dy,
+            g_stashSorterCursorScaleX,
+            g_stashSorterCursorScaleY,
+            label ? label : "?");
+    }
+
+    return dx <= 4 && dy <= 4;
+}
+
+static bool MoveSorterCursorToClientPoint(HWND hwnd, POINT clientPoint)
+{
+    POINT screen = clientPoint;
+    if (!ClientToScreen(hwnd, &screen)) return false;
+
+    RECT windowRect = {};
+    if (!GetWindowRect(hwnd, &windowRect)) return false;
+    if (screen.x < windowRect.left || screen.x >= windowRect.right || screen.y < windowRect.top || screen.y >= windowRect.bottom) {
+        AppendStashSorterLog("cursor move blocked: target screen=%ld,%ld outside game window rect=%ld,%ld,%ld,%ld",
+            (long)screen.x,
+            (long)screen.y,
+            (long)windowRect.left,
+            (long)windowRect.top,
+            (long)windowRect.right,
+            (long)windowRect.bottom);
+        return false;
+    }
+
+    SetForegroundWindow(hwnd);
+    if (!SetSorterCursorToScreenPoint(hwnd, screen, "client-initial")) return false;
+    PostMessageA(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(clientPoint.x, clientPoint.y));
+
+    INPUT nudge[2] = {};
+    nudge[0].type = INPUT_MOUSE;
+    nudge[0].mi.dwFlags = MOUSEEVENTF_MOVE;
+    nudge[0].mi.dx = 1;
+    nudge[1].type = INPUT_MOUSE;
+    nudge[1].mi.dwFlags = MOUSEEVENTF_MOVE;
+    nudge[1].mi.dx = -1;
+    SendInput(2, nudge, sizeof(INPUT));
+
+    if (!SetSorterCursorToScreenPoint(hwnd, screen, "client-final")) return false;
+    PostMessageA(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(clientPoint.x, clientPoint.y));
+    if (!StashSorterInterruptibleSleep(90)) return false;
+
+    POINT actual = {};
+    GetCursorPos(&actual);
+    LONG dx = AbsLong(actual.x - screen.x);
+    LONG dy = AbsLong(actual.y - screen.y);
+    if (dx > 4 || dy > 4) {
+        AppendStashSorterLog("cursor move blocked: requested screen=%ld,%ld actual=%ld,%ld delta=%ld,%ld",
+            (long)screen.x,
+            (long)screen.y,
+            (long)actual.x,
+            (long)actual.y,
+            (long)dx,
+            (long)dy);
+        return false;
+    }
+    return true;
+}
+
+static bool MoveSorterCursorToScreenPoint(HWND hwnd, POINT screenPoint, POINT clientPoint)
+{
+    RECT windowRect = {};
+    if (!GetWindowRect(hwnd, &windowRect)) return false;
+    if (screenPoint.x < windowRect.left || screenPoint.x >= windowRect.right || screenPoint.y < windowRect.top || screenPoint.y >= windowRect.bottom) {
+        AppendStashSorterLog("cursor move blocked: calibrated screen=%ld,%ld outside game window rect=%ld,%ld,%ld,%ld",
+            (long)screenPoint.x,
+            (long)screenPoint.y,
+            (long)windowRect.left,
+            (long)windowRect.top,
+            (long)windowRect.right,
+            (long)windowRect.bottom);
+        return false;
+    }
+
+    SetForegroundWindow(hwnd);
+    if (!SetSorterCursorToScreenPoint(hwnd, screenPoint, "screen-initial")) return false;
+    PostMessageA(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(clientPoint.x, clientPoint.y));
+
+    INPUT nudge[2] = {};
+    nudge[0].type = INPUT_MOUSE;
+    nudge[0].mi.dwFlags = MOUSEEVENTF_MOVE;
+    nudge[0].mi.dx = 1;
+    nudge[1].type = INPUT_MOUSE;
+    nudge[1].mi.dwFlags = MOUSEEVENTF_MOVE;
+    nudge[1].mi.dx = -1;
+    SendInput(2, nudge, sizeof(INPUT));
+
+    if (!SetSorterCursorToScreenPoint(hwnd, screenPoint, "screen-final")) return false;
+    PostMessageA(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(clientPoint.x, clientPoint.y));
+    if (!StashSorterInterruptibleSleep(90)) return false;
+
+    POINT actual = {};
+    GetCursorPos(&actual);
+    LONG dx = AbsLong(actual.x - screenPoint.x);
+    LONG dy = AbsLong(actual.y - screenPoint.y);
+    if (dx > 4 || dy > 4) {
+        AppendStashSorterLog("cursor move blocked: calibrated requested screen=%ld,%ld actual=%ld,%ld delta=%ld,%ld",
+            (long)screenPoint.x,
+            (long)screenPoint.y,
+            (long)actual.x,
+            (long)actual.y,
+            (long)dx,
+            (long)dy);
+        return false;
+    }
+    return true;
+}
+
+static void SendSorterWindowShiftRightClick(HWND hwnd, POINT clientPoint)
+{
+    LPARAM pointParam = MAKELPARAM(clientPoint.x, clientPoint.y);
+    LPARAM shiftDownParam = 1 | ((LPARAM)MapVirtualKeyA(VK_SHIFT, MAPVK_VK_TO_VSC) << 16);
+    LPARAM shiftUpParam = shiftDownParam | (1LL << 30) | (1LL << 31);
+
+    PostMessageA(hwnd, WM_MOUSEMOVE, MK_SHIFT, pointParam);
+    PostMessageA(hwnd, WM_KEYDOWN, VK_SHIFT, shiftDownParam);
+    StashSorterSleep(35);
+    PostMessageA(hwnd, WM_MOUSEMOVE, MK_SHIFT, pointParam);
+    PostMessageA(hwnd, WM_RBUTTONDOWN, MK_SHIFT | MK_RBUTTON, pointParam);
+    StashSorterSleep(55);
+    PostMessageA(hwnd, WM_RBUTTONUP, MK_SHIFT, pointParam);
+    StashSorterSleep(35);
+    PostMessageA(hwnd, WM_KEYUP, VK_SHIFT, shiftUpParam);
+}
+
+static bool SendSorterLeftClick(HWND hwnd, POINT clientPoint)
+{
+    if (!MoveSorterCursorToClientPoint(hwnd, clientPoint)) return false;
+
+    HWND foreground = GetForegroundWindow();
+    DWORD fgPid = 0;
+    if (foreground) GetWindowThreadProcessId(foreground, &fgPid);
+    if (fgPid != GetCurrentProcessId()) {
+        AppendStashSorterLog("left-click blocked: Diablo II lost foreground before click foreground=%p fgPid=%lu selfPid=%lu",
+            (void*)foreground,
+            (unsigned long)fgPid,
+            (unsigned long)GetCurrentProcessId());
+        return false;
+    }
+
+    LPARAM pointParam = MAKELPARAM(clientPoint.x, clientPoint.y);
+    PostMessageA(hwnd, WM_MOUSEMOVE, 0, pointParam);
+
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_MOUSE;
+    inputs[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    inputs[1].type = INPUT_MOUSE;
+    inputs[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    UINT sent = SendInput(2, inputs, sizeof(INPUT));
+
+    PostMessageA(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, pointParam);
+    StashSorterSleep(35);
+    PostMessageA(hwnd, WM_LBUTTONUP, 0, pointParam);
+    if (!StashSorterInterruptibleSleep(140)) return false;
+    return sent == 2;
+}
+
+static bool SendSorterKeyTap(HWND hwnd, WORD vk)
+{
+    if (!hwnd) return false;
+
+    SetForegroundWindow(hwnd);
+    HWND foreground = GetForegroundWindow();
+    DWORD fgPid = 0;
+    if (foreground) GetWindowThreadProcessId(foreground, &fgPid);
+    if (fgPid != GetCurrentProcessId()) {
+        AppendStashSorterLog("key tap blocked: Diablo II is not foreground vk=%u foreground=%p fgPid=%lu selfPid=%lu",
+            (unsigned)vk,
+            (void*)foreground,
+            (unsigned long)fgPid,
+            (unsigned long)GetCurrentProcessId());
+        return false;
+    }
+
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = vk;
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = vk;
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    UINT sent = SendInput(2, inputs, sizeof(INPUT));
+
+    LPARAM downParam = 1 | ((LPARAM)MapVirtualKeyA(vk, MAPVK_VK_TO_VSC) << 16);
+    LPARAM upParam = downParam | (1LL << 30) | (1LL << 31);
+    PostMessageA(hwnd, WM_KEYDOWN, vk, downParam);
+    StashSorterSleep(35);
+    PostMessageA(hwnd, WM_KEYUP, vk, upParam);
+    if (!StashSorterInterruptibleSleep(140)) return false;
+    return sent == 2;
+}
+
+static void SendSorterMouseWheel(HWND hwnd, int wheelDelta)
+{
+    POINT stashPoint = {};
+    if (SharedStashGridCellToClientPoint(hwnd, 4, 3, &stashPoint)) {
+        MoveSorterCursorToClientPoint(hwnd, stashPoint);
+    }
+
+    INPUT inputs[3] = {};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_CONTROL;
+    inputs[1].type = INPUT_MOUSE;
+    inputs[1].mi.dwFlags = MOUSEEVENTF_WHEEL;
+    inputs[1].mi.mouseData = wheelDelta;
+    inputs[2].type = INPUT_KEYBOARD;
+    inputs[2].ki.wVk = VK_CONTROL;
+    inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(3, inputs, sizeof(INPUT));
+    StashSorterSleep(80);
+}
+
+static bool SwitchSorterSharedStashTab(HWND hwnd, uint32_t targetTab)
+{
+    if (targetTab < 1) targetTab = 1;
+    if (targetTab > SOE_STASH_SORTER_SHARED_TAB_COUNT) targetTab = SOE_STASH_SORTER_SHARED_TAB_COUNT;
+
+    WORD vk = (WORD)(VK_NUMPAD1 + (targetTab - 1));
+    LogSorterStashPageState("before-numpad-tab", targetTab);
+    AppendStashSorterLog("tab switch hotkey targetSharedTab=%u vk=%u",
+        (unsigned)targetTab,
+        (unsigned)vk);
+
+    if (!SendSorterKeyTap(hwnd, vk)) {
+        AppendStashSorterLog("tab switch failed: numpad hotkey rejected targetSharedTab=%u vk=%u",
+            (unsigned)targetTab,
+            (unsigned)vk);
+        return false;
+    }
+
+    if (!StashSorterInterruptibleSleep(180)) return false;
+    LogSorterStashPageState("after-numpad-tab", targetTab);
+    return true;
+}
+
+static bool SendSorterShiftRightClick(HWND hwnd, POINT clientPoint)
+{
+    POINT screen = clientPoint;
+    if (!ClientToScreen(hwnd, &screen)) return false;
+
+    if (!MoveSorterCursorToClientPoint(hwnd, clientPoint)) return false;
+    HWND foreground = GetForegroundWindow();
+    DWORD fgPid = 0;
+    if (foreground) GetWindowThreadProcessId(foreground, &fgPid);
+    if (fgPid != GetCurrentProcessId()) {
+        AppendStashSorterLog("click blocked: Diablo II lost foreground before click foreground=%p fgPid=%lu selfPid=%lu",
+            (void*)foreground,
+            (unsigned long)fgPid,
+            (unsigned long)GetCurrentProcessId());
+        return false;
+    }
+
+    StashSorterMouseSnapshot beforeClick = ReadStashSorterMouseSnapshot();
+    AppendStashSorterLog("click hover client=%ld,%ld screen=%ld,%ld gameMouse=%s%u,%u base=%u,%u,%u",
+        (long)clientPoint.x,
+        (long)clientPoint.y,
+        (long)screen.x,
+        (long)screen.y,
+        beforeClick.ok ? "" : "bad/",
+        (unsigned)beforeClick.mouseX,
+        (unsigned)beforeClick.mouseY,
+        (unsigned)beforeClick.baseX,
+        (unsigned)beforeClick.baseY1,
+        (unsigned)beforeClick.baseY2);
+
+    INPUT inputs[4] = {};
+    WORD shiftScan = (WORD)MapVirtualKeyA(VK_SHIFT, MAPVK_VK_TO_VSC);
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = 0;
+    inputs[0].ki.wScan = shiftScan;
+    inputs[0].ki.dwFlags = KEYEVENTF_SCANCODE;
+    inputs[1].type = INPUT_MOUSE;
+    inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+    inputs[2].type = INPUT_MOUSE;
+    inputs[2].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+    inputs[3].type = INPUT_KEYBOARD;
+    inputs[3].ki.wVk = 0;
+    inputs[3].ki.wScan = shiftScan;
+    inputs[3].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+
+    UINT sent = SendInput(4, inputs, sizeof(INPUT));
+    SendSorterWindowShiftRightClick(hwnd, clientPoint);
+    if (!StashSorterInterruptibleSleep(180)) return false;
+    return sent == 4;
+}
+
+static bool SendSorterShiftRightClickAtScreen(HWND hwnd, POINT screenPoint, POINT clientPoint)
+{
+    if (!MoveSorterCursorToScreenPoint(hwnd, screenPoint, clientPoint)) return false;
+    HWND foreground = GetForegroundWindow();
+    DWORD fgPid = 0;
+    if (foreground) GetWindowThreadProcessId(foreground, &fgPid);
+    if (fgPid != GetCurrentProcessId()) {
+        AppendStashSorterLog("click blocked: Diablo II lost foreground before calibrated click foreground=%p fgPid=%lu selfPid=%lu",
+            (void*)foreground,
+            (unsigned long)fgPid,
+            (unsigned long)GetCurrentProcessId());
+        return false;
+    }
+
+    StashSorterMouseSnapshot beforeClick = ReadStashSorterMouseSnapshot();
+    AppendStashSorterLog("click hover direct client=%ld,%ld screen=%ld,%ld gameMouse=%s%u,%u base=%u,%u,%u",
+        (long)clientPoint.x,
+        (long)clientPoint.y,
+        (long)screenPoint.x,
+        (long)screenPoint.y,
+        beforeClick.ok ? "" : "bad/",
+        (unsigned)beforeClick.mouseX,
+        (unsigned)beforeClick.mouseY,
+        (unsigned)beforeClick.baseX,
+        (unsigned)beforeClick.baseY1,
+        (unsigned)beforeClick.baseY2);
+
+    INPUT inputs[4] = {};
+    WORD shiftScan = (WORD)MapVirtualKeyA(VK_SHIFT, MAPVK_VK_TO_VSC);
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = 0;
+    inputs[0].ki.wScan = shiftScan;
+    inputs[0].ki.dwFlags = KEYEVENTF_SCANCODE;
+    inputs[1].type = INPUT_MOUSE;
+    inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+    inputs[2].type = INPUT_MOUSE;
+    inputs[2].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+    inputs[3].type = INPUT_KEYBOARD;
+    inputs[3].ki.wVk = 0;
+    inputs[3].ki.wScan = shiftScan;
+    inputs[3].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+
+    UINT sent = SendInput(4, inputs, sizeof(INPUT));
+    SendSorterWindowShiftRightClick(hwnd, clientPoint);
+    if (!StashSorterInterruptibleSleep(180)) return false;
+    return sent == 4;
+}
+
+static void RunStashSorter()
+{
+    if (InterlockedCompareExchange(&g_stashSorterRunning, 1, 0) != 0) return;
+    InterlockedExchange(&g_stashSorterStopRequested, 0);
+
+    HWND hwnd = nullptr;
+    if (!IsD2ForegroundForSorter(&hwnd)) {
+        AppendStashSorterLog("aborted: Diablo II is not foreground");
+        InterlockedExchange(&g_stashSorterRunning, 0);
+        return;
+    }
+
+    uintptr_t playerUnit = ReadStashSorterPlayerUnit();
+    if (!playerUnit) {
+        AppendStashSorterLog("aborted: player is not in game");
+        InterlockedExchange(&g_stashSorterRunning, 0);
+        return;
+    }
+    if (!IsSharedStashOpenForSorter()) {
+        AppendStashSorterLog("aborted: shared stash is not open");
+        InterlockedExchange(&g_stashSorterRunning, 0);
+        return;
+    }
+
+    const uint32_t maxPasses = 6;
+    uint32_t movedTotal = 0;
+    uint32_t skippedTotal = 0;
+    uint32_t eligibleTotal = 0;
+    uint32_t currentTarget = 0;
+    POINT lastCursorScreen = {};
+    POINT lastCursorClient = {};
+    bool hasLastCursorPoint = false;
+    bool aborted = false;
+
+    for (uint32_t pass = 1; pass <= maxPasses; ++pass) {
+        std::vector<StashSorterCandidate> candidates;
+        ReadStashSorterInventoryItems(playerUnit, &candidates);
+        if (candidates.empty()) {
+            if (pass == 1) {
+                AppendStashSorterLog("done: no eligible inventory items");
+            } else {
+                AppendStashSorterLog("pass %u: no remaining eligible inventory items", (unsigned)pass);
+            }
+            break;
+        }
+
+        eligibleTotal += (uint32_t)candidates.size();
+        uint32_t movedBeforePass = movedTotal;
+        uint32_t inputThisPass = 0;
+        AppendStashSorterLog("pass %u: eligible=%u", (unsigned)pass, (unsigned)candidates.size());
+
+        for (uint32_t targetIndex = 0; targetIndex <= SOE_STASH_SORTER_SHARED_TAB_COUNT; ++targetIndex) {
+            if (StashSorterStopRequested()) {
+                AppendStashSorterLog("aborted: stop hotkey pressed moved=%u skipped=%u eligible=%u pass=%u",
+                    (unsigned)movedTotal, (unsigned)skippedTotal, (unsigned)eligibleTotal, (unsigned)pass);
+                aborted = true;
+                goto sorter_done;
+            }
+            uint32_t targetTab = targetIndex == 0 ? SOE_STASH_SORTER_MATERIALS_TAB_TARGET : targetIndex;
+            bool useMaterialsTab = targetTab == SOE_STASH_SORTER_MATERIALS_TAB_TARGET;
+            bool hasTarget = false;
+            for (const StashSorterCandidate& item : candidates) {
+                if (item.targetTab == targetTab) {
+                    hasTarget = true;
+                    break;
+                }
+            }
+            if (!hasTarget) continue;
+
+            if (useMaterialsTab && currentTarget != targetTab) {
+                AppendStashSorterLog("material affinity pass: using Shift+Right Click without switching shared stash tabs");
+                currentTarget = targetTab;
+            } else if (!useMaterialsTab && currentTarget != targetTab) {
+                if (!SwitchSorterSharedStashTab(hwnd, targetTab)) {
+                    if (StashSorterStopRequested()) {
+                        AppendStashSorterLog("aborted: stop hotkey pressed while switching tabs moved=%u skipped=%u eligible=%u pass=%u",
+                            (unsigned)movedTotal, (unsigned)skippedTotal, (unsigned)eligibleTotal, (unsigned)pass);
+                        aborted = true;
+                        goto sorter_done;
+                    }
+                    for (const StashSorterCandidate& item : candidates) {
+                        if (item.targetTab == targetTab) ++skippedTotal;
+                    }
+                    continue;
+                }
+                currentTarget = targetTab;
+            }
+
+            for (const StashSorterCandidate& item : candidates) {
+                if (item.targetTab != targetTab) continue;
+                if (StashSorterStopRequested()) {
+                    AppendStashSorterLog("aborted: stop hotkey pressed moved=%u skipped=%u eligible=%u pass=%u",
+                        (unsigned)movedTotal, (unsigned)skippedTotal, (unsigned)eligibleTotal, (unsigned)pass);
+                    aborted = true;
+                    goto sorter_done;
+                }
+
+                StashSorterCandidate current = {};
+                if (!FindStashSorterItemById(playerUnit, item.unitId, &current)) {
+                    AppendStashSorterLog("skipped %s code=%s id=%u: item disappeared before move",
+                        item.displayName, item.codeText, (unsigned)item.unitId);
+                    ++skippedTotal;
+                    continue;
+                }
+                uint32_t currentX = 0;
+                uint32_t currentY = 0;
+                if (!FindStashSorterItemInBackpackRows(playerUnit, item.gridIndex, item.unit, &currentX, &currentY, nullptr, nullptr)) {
+                    AppendStashSorterLog("skipped %s code=%s id=%u: no longer in inventory grid",
+                        item.displayName, item.codeText, (unsigned)item.unitId);
+                    ++skippedTotal;
+                    continue;
+                }
+                if (IsStashSorterCellProtected(currentX, currentY)) {
+                    AppendStashSorterLog("skipped %s code=%s id=%u: current cell %u,%u is protected",
+                        item.displayName,
+                        item.codeText,
+                        (unsigned)item.unitId,
+                        (unsigned)currentX,
+                        (unsigned)currentY);
+                    ++skippedTotal;
+                    continue;
+                }
+
+                POINT screenPt = {};
+                POINT clientPt = {};
+                if (!InventoryGridCellToScreenAndClientPoint(hwnd, currentX, currentY, &screenPt, &clientPt)) {
+                    AppendStashSorterLog("skipped %s code=%s id=%u: could not map inventory cell %u,%u",
+                        item.displayName, item.codeText, (unsigned)item.unitId, (unsigned)currentX, (unsigned)currentY);
+                    ++skippedTotal;
+                    continue;
+                }
+
+                RECT hwndRect = {};
+                GetWindowRect(hwnd, &hwndRect);
+                AppendStashSorterLog("move inventory %s code=%s id=%u cell=%u,%u client=%ld,%ld screen=%ld,%ld hwndRect=%ld,%ld,%ld,%ld target=%s tab=%u calibrated=%d mapping=screenDirect grid=%.2f,%.2f cellSize=%.2fx%.2f",
+                    item.displayName,
+                    item.codeText,
+                    (unsigned)item.unitId,
+                    (unsigned)currentX,
+                    (unsigned)currentY,
+                    (long)clientPt.x,
+                    (long)clientPt.y,
+                    (long)screenPt.x,
+                    (long)screenPt.y,
+                    (long)hwndRect.left,
+                    (long)hwndRect.top,
+                    (long)hwndRect.right,
+                    (long)hwndRect.bottom,
+                    useMaterialsTab ? "materials" : "shared",
+                    (unsigned)item.targetTab,
+                    g_stashSorterConfig.calibrationEnabled ? 1 : 0,
+                    g_stashSorterConfig.calibrationLeft,
+                    g_stashSorterConfig.calibrationTop,
+                    g_stashSorterConfig.calibrationCellWidth,
+                    g_stashSorterConfig.calibrationCellHeight);
+                bool clickOk = SendSorterShiftRightClickAtScreen(hwnd, screenPt, clientPt);
+                if (!clickOk) {
+                    if (StashSorterStopRequested()) {
+                        AppendStashSorterLog("aborted: stop hotkey pressed during item move moved=%u skipped=%u eligible=%u pass=%u",
+                            (unsigned)movedTotal, (unsigned)skippedTotal, (unsigned)eligibleTotal, (unsigned)pass);
+                        aborted = true;
+                        goto sorter_done;
+                    }
+                    AppendStashSorterLog("skipped %s code=%s id=%u: inventory-to-%s input failed",
+                        item.displayName,
+                        item.codeText,
+                        (unsigned)item.unitId,
+                        useMaterialsTab ? "materials-tab" : "stash");
+                    ++skippedTotal;
+                    continue;
+                }
+
+                ++inputThisPass;
+                lastCursorScreen = screenPt;
+                lastCursorClient = clientPt;
+                hasLastCursorPoint = true;
+
+                if (useMaterialsTab) {
+                    AppendStashSorterLog("material affinity input sent for %s code=%s id=%u",
+                        item.displayName, item.codeText, (unsigned)item.unitId);
+                }
+
+                StashSorterCandidate afterPlace = {};
+                bool foundAfterPlace = FindStashSorterItemById(playerUnit, item.unitId, &afterPlace);
+                bool stillInInventory = FindStashSorterItemInBackpackRows(playerUnit, item.gridIndex, item.unit, nullptr, nullptr, nullptr, nullptr);
+                if (stillInInventory) {
+                    AppendStashSorterLog("skipped %s code=%s id=%u: item remained in inventory grid; will retry if another pass is needed",
+                        item.displayName, item.codeText, (unsigned)item.unitId);
+                    ++skippedTotal;
+                    continue;
+                }
+
+                ++movedTotal;
+                if (foundAfterPlace) {
+                    AppendStashSorterLog("moved %s code=%s id=%u target=%s tab=%u finalCell=%u,%u page=%u node=%u body=%u inv=%u",
+                        item.displayName,
+                        item.codeText,
+                        (unsigned)item.unitId,
+                        useMaterialsTab ? "materials" : "shared",
+                        (unsigned)item.targetTab,
+                        (unsigned)afterPlace.gridX,
+                        (unsigned)afterPlace.gridY,
+                        (unsigned)afterPlace.page,
+                        (unsigned)afterPlace.nodePage,
+                        (unsigned)afterPlace.bodyLocation,
+                        (unsigned)afterPlace.inventoryPage);
+                } else {
+                    AppendStashSorterLog("moved %s code=%s id=%u target=%s tab=%u final=not-found",
+                        item.displayName,
+                        item.codeText,
+                        (unsigned)item.unitId,
+                        useMaterialsTab ? "materials" : "shared",
+                        (unsigned)item.targetTab);
+                }
+            }
+        }
+
+        if (StashSorterStopRequested()) {
+            AppendStashSorterLog("aborted: stop hotkey pressed moved=%u skipped=%u eligible=%u pass=%u",
+                (unsigned)movedTotal, (unsigned)skippedTotal, (unsigned)eligibleTotal, (unsigned)pass);
+            aborted = true;
+            break;
+        }
+        if (movedTotal == movedBeforePass && inputThisPass == 0) {
+            AppendStashSorterLog("pass %u made no sortable input; stopping", (unsigned)pass);
+            break;
+        }
+        if (movedTotal == movedBeforePass) {
+            AppendStashSorterLog("pass %u sent input but verified no moved items; retrying remaining inventory once more if available", (unsigned)pass);
+        }
+        if (pass < maxPasses && !StashSorterInterruptibleSleep(120)) {
+            aborted = true;
+            break;
+        }
+    }
+
+sorter_done:
+    if (hasLastCursorPoint) {
+        SetSorterCursorToScreenPoint(hwnd, lastCursorScreen, aborted ? "sort-finish-aborted" : "sort-finish");
+        PostMessageA(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(lastCursorClient.x, lastCursorClient.y));
+    }
+    if (!aborted) {
+        AppendStashSorterLog("done: moved=%u skipped=%u eligible=%u",
+            (unsigned)movedTotal, (unsigned)skippedTotal, (unsigned)eligibleTotal);
+    }
+    InterlockedExchange(&g_stashSorterRunning, 0);
+}
+
+static DWORD WINAPI StashSorterHotkeyThread(LPVOID)
+{
+    AppendStashSorterLog("hotkey watcher started");
+    bool wasDown = false;
+    while (!g_shutdown) {
+        LoadStashSorterConfigIfChanged();
+        bool down = StashSorterSortChordPressed();
+        if (down && !wasDown) {
+            AppendStashSorterLog("hotkey pressed; waiting for release before sorting");
+            while (!g_shutdown && StashSorterSortChordPressed()) {
+                Sleep(20);
+            }
+            RunStashSorter();
+        }
+        wasDown = down;
+        Sleep(50);
+    }
+    return 0;
+}
+
 // Original signature: void __stdcall SetItemFlag(UnitAny* pUnit, uint32_t flagMask, int enable)
 static void __stdcall HookSetItemFlag(uintptr_t pUnit, uint32_t flagMask, int enable)
 {
@@ -10112,6 +12317,7 @@ static DWORD WINAPI InstallThread(LPVOID)
     LoadConfig();
     SetupGrailLogger();
     StartHookDropEventWriter();
+    CreateThread(nullptr, 0, StashSorterHotkeyThread, nullptr, 0, nullptr);
 
 #ifdef SOE_PGAME_DIAG
 #if defined(SOE_COMMAND_TRACE) && defined(SOE_RESET_PROTOTYPE)

@@ -826,7 +826,14 @@
   }
 
   function isPlaceholderItemName(value: unknown): boolean {
-    return /^Item #\d+$/i.test(String(value ?? '').trim());
+    const raw = String(value ?? '').trim();
+    if (!raw) return true;
+    const normalized = raw.toLowerCase();
+    return (
+      normalized === 'item-code' ||
+      normalized === 'unknown item' ||
+      /^item\s+#\d+$/i.test(raw)
+    );
   }
 
   function normalizeDisplayName(name: string): string {
@@ -989,6 +996,16 @@
     return String(item.source ?? '').toLowerCase() === 'identify-inventory';
   }
 
+  const UNIQUE_SET_TRACKING_CATEGORIES = new Set<DropTrackerCategoryKey>([
+    'unique',
+    'hellforged',
+    'sets',
+  ]);
+
+  function specificNonGrailCategories(categories: DropTrackerCategoryKey[]): DropTrackerCategoryKey[] {
+    return categories.filter((category) => !UNIQUE_SET_TRACKING_CATEGORIES.has(category));
+  }
+
   function hasTrustedExactUniqueSetName(item: ItemDrop): boolean {
     if (holyGrailItemFromDrop(item)) return true;
     if (!isUniqueOrSetDrop(item)) return true;
@@ -1014,10 +1031,33 @@
     if (grailItem?.category === 'hatredOrbs') return ['hatredOrb'];
     if (grailItem?.category === 'essences') return ['essence'];
     if (grailItem?.category === 'ascendancy') return ['ascendancy'];
+    const categorized = categorizeDrop(item);
     if (hasTrustedExactUniqueSetName(item)) {
-      return categorizeDrop(item);
+      return categorized;
     }
+    const specificCategories = specificNonGrailCategories(categorized);
+    if (specificCategories.length > 0) return specificCategories;
     return String(item.quality ?? '').toLowerCase() === 'set' ? ['sets'] : ['unique'];
+  }
+
+  function specificDropDisplayName(item: ItemDrop): string {
+    const material = materialNameFromDrop(item);
+    if (material) return material;
+    const soe13CodeName = soe13CodeDisplayName(item);
+    if (soe13CodeName) return soe13CodeName;
+    for (const candidate of [
+      item.canonical_name,
+      item.canonicalName,
+      item.base_name,
+      item.name,
+    ]) {
+      if (!candidate || isPlaceholderItemName(candidate)) continue;
+      const cleanName = cleanTrackedItemName(candidate);
+      if (cleanName && !isPlaceholderItemName(cleanName)) {
+        return canonicalTrackedItemName(cleanName, inferHolyGrailCategory(item));
+      }
+    }
+    return 'Tracked item';
   }
 
   function recordTrackerDrop(item: ItemDrop, isNewGrailItem = false) {
@@ -1026,9 +1066,12 @@
 
     const categories = trackingCategoriesForDrop(item);
     const exactNameTrusted = hasTrustedExactUniqueSetName(item);
+    const hasSpecificNonGrailCategory = specificNonGrailCategories(categories).length > 0;
     const displayName = exactNameTrusted
       ? trackedItemDisplayName(item)
-      : `Unverified ${cleanTrackedItemName(item.canonical_name || item.canonicalName || item.base_name || item.name || item.quality || 'item')}`;
+      : hasSpecificNonGrailCategory
+        ? specificDropDisplayName(item)
+        : `Unverified ${cleanTrackedItemName(item.canonical_name || item.canonicalName || item.base_name || item.name || item.quality || 'item')}`;
     const trackerMaterialName = materialTrackerNameFromDrop(item);
     const matchedMaterialName = materialNameFromDrop(item);
     const materialName =

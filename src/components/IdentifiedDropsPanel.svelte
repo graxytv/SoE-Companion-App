@@ -187,16 +187,16 @@
       return 'Shared hook needs an update before Identified Drops can run.';
     }
     if (dropHookStatus.unknownDllPresent) {
-      return 'ProjectD2 has an unknown ijl11.dll. Install the Drops Tracker Hook before enabling Identified Drops.';
+      return 'ProjectD2 has an unknown ijl11.dll. Install the SoE Hook before enabling Identified Drops.';
     }
     if (dropHookStatus.identifiedInstalled && dropHookStatus.grailInstalled) {
-      return 'Identified Drops are installed. Drops Tracker Hook is also enabled.';
+      return 'Identified Drops are installed. SoE Hook tracking is also enabled.';
     }
     if (dropHookStatus.identifiedInstalled) {
-      return 'Identified Drops are installed. Drops Tracker Hook is off.';
+      return 'Identified Drops are installed. SoE Hook tracking is off.';
     }
     if (dropHookStatus.grailInstalled) {
-      return 'Drops Tracker Hook is installed. Identified Drops are off.';
+      return 'SoE Hook tracking is installed. Identified Drops are off.';
     }
     if (dropHookStatus.installed) {
       return 'Shared SoE hook is installed. Identified Drops are off.';

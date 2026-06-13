@@ -253,10 +253,19 @@
     settingsStore.setHolyGrailFound(runeword.key, runeword.name, 'runewords', (event.currentTarget as HTMLInputElement).checked);
   }
 
-  function confirmReset(): void {
-    settingsStore.resetHolyGrail();
-    pendingReset = false;
-    backupMessage = 'Holy Grail reset.';
+  async function confirmReset(): Promise<void> {
+    backupBusy = true;
+    backupMessage = '';
+    try {
+      await settingsStore.resetHolyGrail();
+      backupMessage = 'Holy Grail reset.';
+      await refreshBackupStatus();
+    } catch (error) {
+      backupMessage = `Reset failed: ${error}`;
+    } finally {
+      pendingReset = false;
+      backupBusy = false;
+    }
   }
 
   function formatBackupDate(value: string | null | undefined): string {
@@ -342,7 +351,7 @@
     <div>
       <h2 class="section-title grail-title">Holy Grail</h2>
       <p class="section-description grail-description">
-        Tracks unique and set items found in Sanctuary of Exile. Items auto-check through the required Drops Tracker Hook.
+        Tracks unique and set items found in Sanctuary of Exile. Items auto-check through the required SoE Hook.
       </p>
     </div>
     <div class="progress-card">

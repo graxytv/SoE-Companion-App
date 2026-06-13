@@ -225,9 +225,16 @@
     }
   }
 
-  function resetAchievements() {
-    settingsStore.resetAchievementProgress();
-    confirmReset = false;
+  async function resetAchievements() {
+    try {
+      await settingsStore.resetAchievementProgress();
+      backupMessage = 'Achievements reset.';
+      await refreshBackupStatus();
+    } catch (error) {
+      backupMessage = String(error);
+    } finally {
+      confirmReset = false;
+    }
   }
 
   refreshBackupStatus();

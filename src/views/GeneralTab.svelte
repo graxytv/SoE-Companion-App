@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { Button, HotkeyInput, ThemeToggle, Toggle, UpdateButton } from '../components';
+  import DropsTrackerHookPanel from '../components/DropsTrackerHookPanel.svelte';
   import { settingsStore, type HotkeyConfig } from '../stores';
 
   let saveExitAutomationStatus = $state('');
@@ -224,6 +225,12 @@
       {/if}
     </div>
   </div>
+
+  <DropsTrackerHookPanel
+    showInstallAction={false}
+    title="SoE Hook Maintenance"
+    description="Shared hook configuration for tracking, Holy Grail, Fate Cards, materials, runes, item sounds, overlays, Identified Drops, and Stash Sorter."
+  />
 
 </section>
 

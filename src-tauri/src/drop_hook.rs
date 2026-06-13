@@ -7,7 +7,7 @@ const DLL_NAME: &str = "ijl11.dll";
 const ORIGINAL_DLL_NAME: &str = "ijl11_orig.dll";
 const INI_NAME: &str = "DropIdentified.ini";
 const LOG_PATH: &str = r"C:\SoECompanion\logs\soe_companion_drops.log";
-const DROP_HOOK_VERSION: &str = "drop-events-v5";
+const DROP_HOOK_VERSION: &str = "drop-events-v8";
 
 const BUNDLED_DLL: &[u8] = include_bytes!("../resources/ijl11.dll");
 const BUNDLED_INI: &str = include_str!("../resources/DropIdentified.ini");
@@ -274,7 +274,7 @@ fn replace_drop_identified_section(contents: &str, config: &DropIdentifiedConfig
 
 fn auto_grail_section(enabled: bool) -> String {
     format!(
-        "[AutoGrail]\r\n; Controls whether SoE Companion treats the shared hook as the required Drops Tracker Hook.\r\n; The shared ijl11.dll can also be used for Identified Drops.\r\nEnabled={}\r\nHookVersion={}\r\n",
+        "[AutoGrail]\r\n; Controls whether SoE Companion treats the shared ijl11.dll as the required SoE Hook.\r\n; The shared ijl11.dll can also be used for Identified Drops.\r\nEnabled={}\r\nHookVersion={}\r\n",
         bool_ini(enabled),
         DROP_HOOK_VERSION
     )
@@ -697,23 +697,23 @@ pub fn get_drop_hook_status_for_path(project_d2_dir: Option<String>) -> DropHook
             status.project_d2_dir
         )
     } else if status.grail_installed && status.identified_installed {
-        "Shared SoE hook is installed. Drops Tracker Hook and Identified Drops are enabled."
+        "Shared SoE Hook is installed. Companion tracking and Identified Drops are enabled."
             .to_string()
     } else if status.grail_installed {
-        "Drops Tracker Hook is installed. Identified Drops are off.".to_string()
+        "SoE Hook is installed. Identified Drops are off.".to_string()
     } else if status.identified_installed {
-        "Identified Drops are installed. Drops Tracker Hook is off.".to_string()
+        "Identified Drops are installed. Companion tracking is off.".to_string()
     } else if status.hook_needs_update {
-        "Drops Tracker Hook is installed but needs an update for this app version.".to_string()
+        "SoE Hook is installed but needs an update for this app version.".to_string()
     } else if status.unknown_dll_present {
         "ProjectD2 has an ijl11.dll that is not recognized as the SoE Companion hook. Installing will back it up before replacing it.".to_string()
     } else if status.installed {
-        "Shared SoE hook is installed, but Drops Tracker Hook and Identified Drops are both off."
+        "Shared SoE Hook is installed, but Companion tracking and Identified Drops are both off."
             .to_string()
     } else if status.dll_exists {
-        "ProjectD2 has an ijl11.dll, but it is not the bundled SoE Drops Tracker Hook.".to_string()
+        "ProjectD2 has an ijl11.dll, but it is not the bundled SoE Hook.".to_string()
     } else {
-        "Drops Tracker Hook is not installed.".to_string()
+        "SoE Hook is not installed.".to_string()
     };
     build_status(project_d2_dir, message)
 }
@@ -745,7 +745,7 @@ pub fn restore_original_ijl11_for_path(
     restore_original_ijl11(&project_dir)?;
     Ok(build_status(
         project_d2_dir,
-        "Original ijl11.dll restored. Drops Tracker Hook and Identified Drops are disabled.".to_string(),
+        "Original ijl11.dll restored. SoE Hook and Identified Drops are disabled.".to_string(),
     ))
 }
 
@@ -775,20 +775,20 @@ pub fn install_auto_grail_hook_for_path(
         project_d2_dir,
         if previous_status.hook_needs_update {
             if identified_enabled {
-                "Drops Tracker Hook updated for this app version. Identified Drops remain enabled.".to_string()
+                "SoE Hook updated for this app version. Identified Drops remain enabled.".to_string()
             } else {
-                "Drops Tracker Hook updated for this app version. Identified Drops remain off.".to_string()
+                "SoE Hook updated for this app version. Identified Drops remain off.".to_string()
             }
         } else if previous_status.unknown_dll_present {
             if identified_enabled {
-                "Unknown ijl11.dll backed up and Drops Tracker Hook installed. Identified Drops remain enabled.".to_string()
+                "Unknown ijl11.dll backed up and SoE Hook installed. Identified Drops remain enabled.".to_string()
             } else {
-                "Unknown ijl11.dll backed up and Drops Tracker Hook installed. Identified Drops remain off.".to_string()
+                "Unknown ijl11.dll backed up and SoE Hook installed. Identified Drops remain off.".to_string()
             }
         } else if identified_enabled {
-            "Drops Tracker Hook installed. Identified Drops remain enabled.".to_string()
+            "SoE Hook installed. Identified Drops remain enabled.".to_string()
         } else {
-            "Drops Tracker Hook installed. Identified Drops remain off.".to_string()
+            "SoE Hook installed. Identified Drops remain off.".to_string()
         },
     ))
 }
@@ -822,9 +822,9 @@ pub fn install_identified_drops_hook_for_path(
     Ok(build_status(
         project_d2_dir,
         if next_auto_grail {
-            "Identified Drops installed. Drops Tracker Hook remains enabled.".to_string()
+            "Identified Drops installed. SoE Hook remains enabled.".to_string()
         } else {
-            "Identified Drops installed. Drops Tracker Hook remains off.".to_string()
+            "Identified Drops installed. SoE Hook remains off.".to_string()
         },
     ))
 }
@@ -849,9 +849,9 @@ pub fn uninstall_auto_grail_hook_for_path(
     Ok(build_status(
         project_d2_dir,
         if identified_enabled {
-            "Drops Tracker Hook removed. Identified Drops remain installed.".to_string()
+            "SoE Hook tracking removed. Identified Drops remain installed.".to_string()
         } else {
-            "Drops Tracker Hook removed. Shared hook restored/removed.".to_string()
+            "SoE Hook removed. Shared hook restored/removed.".to_string()
         },
     ))
 }
@@ -876,7 +876,7 @@ pub fn uninstall_identified_drops_hook_for_path(
     Ok(build_status(
         project_d2_dir,
         if auto_grail_enabled {
-            "Identified Drops removed. Drops Tracker Hook remains installed.".to_string()
+            "Identified Drops removed. SoE Hook remains installed.".to_string()
         } else {
             "Identified Drops removed. Shared hook restored/removed.".to_string()
         },

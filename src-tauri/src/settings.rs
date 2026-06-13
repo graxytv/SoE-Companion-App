@@ -4,8 +4,10 @@
 //! Settings are stored in a JSON file in the app's data directory.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::fs::File;
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -22,6 +24,12 @@ const FATE_CARD_BACKUP_FILE: &str = "fate-card-counts-backup.json";
 const FATE_CARD_BACKUP_DIR: &str = "fate-card-counts-backups";
 const ACHIEVEMENT_BACKUP_FILE: &str = "achievements-backup.json";
 const ACHIEVEMENT_BACKUP_DIR: &str = "achievement-backups";
+const SOE_COMPANION_CONFIG_DIR: &str = r"C:\SoECompanion\config";
+const STASH_SORTER_CONFIG_FILE: &str = r"C:\SoECompanion\config\stash_sorter.ini";
+const STASH_SORTER_LOG_FILE: &str = r"C:\SoECompanion\logs\stash_sorter.log";
+const STASH_SORTER_SHARED_TAB_COUNT: u32 = 9;
+const STASH_SORTER_MIN_SPEED: u32 = 50;
+const STASH_SORTER_MAX_SPEED: u32 = 250;
 static SETTINGS_SAVE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static LAST_ROUTINE_BACKUP_WRITE: LazyLock<Mutex<Option<Instant>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -51,6 +59,42 @@ pub enum SoundSource {
     Default,
     Custom { file_name: String },
     Empty,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StashSorterRule {
+    pub id: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub match_type: String,
+    #[serde(default)]
+    pub match_value: String,
+    #[serde(default = "default_stash_sorter_target_tab")]
+    pub target_tab: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashSorterCalibration {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_stash_sorter_calibration_left")]
+    pub left: f64,
+    #[serde(default = "default_stash_sorter_calibration_top")]
+    pub top: f64,
+    #[serde(default = "default_stash_sorter_calibration_cell_width")]
+    pub cell_width: f64,
+    #[serde(default = "default_stash_sorter_calibration_cell_height")]
+    pub cell_height: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StashSorterProtectedCell {
+    pub x: u32,
+    pub y: u32,
 }
 
 fn default_sounds() -> Vec<SoundSlot> {
@@ -294,6 +338,38 @@ pub struct AppSettings {
     /// Hotkey that runs the experimental game reset automation.
     #[serde(default = "default_game_reset_hotkey")]
     pub game_reset_hotkey: HotkeyConfig,
+
+    /// When true, the installed hook listens for the stash sorter hotkey.
+    #[serde(default)]
+    pub stash_sorter_enabled: bool,
+
+    /// When true, known material-tab items use the game's material-tab affinity.
+    #[serde(default = "default_true")]
+    pub stash_sorter_automatic_materials_tab_enabled: bool,
+
+    /// Hotkey that runs the shared-stash sorter through in-game inputs.
+    #[serde(default = "default_stash_sorter_hotkey")]
+    pub stash_sorter_hotkey: HotkeyConfig,
+
+    /// Ordered stash sorting rules. The first enabled match wins.
+    #[serde(default)]
+    pub stash_sorter_rules: Vec<StashSorterRule>,
+
+    /// Item names/codes that should never be moved by the stash sorter.
+    #[serde(default = "default_stash_sorter_blacklist")]
+    pub stash_sorter_blacklist: Vec<String>,
+
+    /// Calibrated inventory grid coordinates used by the hook for mouse clicks.
+    #[serde(default = "default_stash_sorter_calibration")]
+    pub stash_sorter_calibration: StashSorterCalibration,
+
+    /// Inventory grid cells the sorter must never click.
+    #[serde(default = "default_stash_sorter_protected_cells")]
+    pub stash_sorter_protected_cells: Vec<StashSorterProtectedCell>,
+
+    /// UI status object for the most recent sorter activity.
+    #[serde(default = "default_stash_sorter_last_run")]
+    pub stash_sorter_last_run: serde_json::Value,
 
     /// When true, show the Drops Tracker counter on the overlay.
     #[serde(default = "default_drops_tracker_enabled")]
@@ -558,6 +634,10 @@ fn default_volume() -> f32 {
     0.8
 }
 
+fn default_stash_sorter_target_tab() -> u32 {
+    1
+}
+
 fn default_main_tab_order() -> Vec<String> {
     [
         "home",
@@ -759,6 +839,61 @@ fn default_game_reset_hotkey() -> HotkeyConfig {
     }
 }
 
+fn default_stash_sorter_hotkey() -> HotkeyConfig {
+    HotkeyConfig {
+        key_code: 0,
+        modifiers: 0,
+        display: "None".to_string(),
+    }
+}
+
+fn default_stash_sorter_blacklist() -> Vec<String> {
+    vec![
+        "Horadric Cube".to_string(),
+        "Tome of Town Portal".to_string(),
+        "Tome of Identify".to_string(),
+    ]
+}
+
+fn default_stash_sorter_calibration_left() -> f64 {
+    417.0
+}
+
+fn default_stash_sorter_calibration_top() -> f64 {
+    219.0
+}
+
+fn default_stash_sorter_calibration_cell_width() -> f64 {
+    29.0
+}
+
+fn default_stash_sorter_calibration_cell_height() -> f64 {
+    29.0
+}
+
+fn default_stash_sorter_calibration() -> StashSorterCalibration {
+    StashSorterCalibration {
+        enabled: false,
+        left: default_stash_sorter_calibration_left(),
+        top: default_stash_sorter_calibration_top(),
+        cell_width: default_stash_sorter_calibration_cell_width(),
+        cell_height: default_stash_sorter_calibration_cell_height(),
+    }
+}
+
+fn default_stash_sorter_protected_cells() -> Vec<StashSorterProtectedCell> {
+    Vec::new()
+}
+
+fn default_stash_sorter_last_run() -> serde_json::Value {
+    serde_json::json!({
+        "timestampMs": 0,
+        "moved": 0,
+        "skipped": 0,
+        "message": "No stash sort has run yet.",
+    })
+}
+
 fn default_drops_tracker_enabled() -> bool {
     true
 }
@@ -861,6 +996,14 @@ impl Default for AppSettings {
             reset_drops_tracker_hotkey: default_reset_drops_tracker_hotkey(),
             muling_mode_hotkey: default_muling_mode_hotkey(),
             game_reset_hotkey: default_game_reset_hotkey(),
+            stash_sorter_enabled: false,
+            stash_sorter_automatic_materials_tab_enabled: default_true(),
+            stash_sorter_hotkey: default_stash_sorter_hotkey(),
+            stash_sorter_rules: Vec::new(),
+            stash_sorter_blacklist: default_stash_sorter_blacklist(),
+            stash_sorter_calibration: default_stash_sorter_calibration(),
+            stash_sorter_protected_cells: default_stash_sorter_protected_cells(),
+            stash_sorter_last_run: default_stash_sorter_last_run(),
             drops_tracker_enabled: default_drops_tracker_enabled(),
             drops_tracker_run_counter_enabled: default_true(),
             drops_tracker_run_timer_enabled: default_true(),
@@ -977,6 +1120,14 @@ fn achievement_snapshot_dir(app: &AppHandle) -> Result<PathBuf, String> {
     fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create achievement backup dir: {}", e))?;
     Ok(dir)
+}
+
+fn remove_file_if_exists(path: PathBuf, label: &str) -> Result<(), String> {
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Failed to remove {}: {}", label, error)),
+    }
 }
 
 fn now_backup_stamp() -> String {
@@ -1313,6 +1464,19 @@ pub fn open_holy_grail_backup_folder(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn reset_holy_grail_found(app: AppHandle) -> Result<AppSettings, String> {
+    let _guard = SETTINGS_SAVE_LOCK
+        .lock()
+        .map_err(|_| "Settings save lock poisoned".to_string())?;
+    let mut settings = load_settings(app.clone())?;
+    settings.holy_grail_found.clear();
+    settings.fate_card_drop_counts.clear();
+    write_settings_to_store(&app, &settings)?;
+    remove_file_if_exists(holy_grail_backup_path(&app)?, "Holy Grail backup")?;
+    Ok(settings)
+}
+
+#[tauri::command]
 pub fn backup_fate_card_counts(
     app: AppHandle,
     counts: HashMap<String, u32>,
@@ -1406,6 +1570,169 @@ pub fn open_achievement_backup_folder(app: AppHandle) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("Failed to open achievements backup folder: {}", e))?;
     Ok(())
+}
+
+#[tauri::command]
+pub fn reset_achievement_progress(app: AppHandle) -> Result<AppSettings, String> {
+    let _guard = SETTINGS_SAVE_LOCK
+        .lock()
+        .map_err(|_| "Settings save lock poisoned".to_string())?;
+    let mut settings = load_settings(app.clone())?;
+    settings.achievement_stats = default_achievement_stats();
+    settings.rune_tracker_counts.clear();
+    settings.holy_grail_found.clear();
+    settings.fate_card_drop_counts.clear();
+    write_settings_to_store(&app, &settings)?;
+    remove_file_if_exists(achievement_backup_path(&app)?, "achievement backup")?;
+    remove_file_if_exists(holy_grail_backup_path(&app)?, "Holy Grail backup")?;
+    Ok(settings)
+}
+
+fn normalize_stash_sorter_calibration(
+    calibration: StashSorterCalibration,
+) -> StashSorterCalibration {
+    StashSorterCalibration {
+        enabled: calibration.enabled,
+        left: calibration.left.clamp(0.0, 800.0),
+        top: calibration.top.clamp(0.0, 600.0),
+        cell_width: calibration.cell_width.clamp(8.0, 120.0),
+        cell_height: calibration.cell_height.clamp(8.0, 120.0),
+    }
+}
+
+fn normalize_stash_sorter_protected_cells(
+    protected_cells: Vec<StashSorterProtectedCell>,
+) -> Vec<StashSorterProtectedCell> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for cell in protected_cells {
+        if cell.x >= 10 || cell.y >= 8 {
+            continue;
+        }
+        if seen.insert((cell.x, cell.y)) {
+            out.push(cell);
+        }
+    }
+    out
+}
+
+#[tauri::command]
+pub fn write_stash_sorter_config(
+    enabled: bool,
+    automatic_materials_tab_enabled: bool,
+    hotkey: HotkeyConfig,
+    stop_hotkey: HotkeyConfig,
+    speed: u32,
+    rules: Vec<StashSorterRule>,
+    blacklist: Vec<String>,
+    calibration: StashSorterCalibration,
+    protected_cells: Vec<StashSorterProtectedCell>,
+) -> Result<String, String> {
+    fs::create_dir_all(SOE_COMPANION_CONFIG_DIR)
+        .map_err(|e| format!("Failed to create SoE Companion config folder: {}", e))?;
+
+    let mut text = String::new();
+    text.push_str("[StashSorter]\n");
+    text.push_str("Version=2\n");
+    text.push_str(&format!("Enabled={}\n", if enabled { 1 } else { 0 }));
+    text.push_str(&format!(
+        "AutomaticMaterialsTab={}\n",
+        if automatic_materials_tab_enabled { 1 } else { 0 }
+    ));
+    text.push_str(&format!("KeyCode={}\n", hotkey.key_code));
+    text.push_str(&format!("Modifiers={}\n", hotkey.modifiers));
+    text.push_str(&format!("StopKeyCode={}\n", stop_hotkey.key_code));
+    text.push_str(&format!("StopModifiers={}\n", stop_hotkey.modifiers));
+    text.push_str(&format!(
+        "Speed={}\n",
+        speed.clamp(STASH_SORTER_MIN_SPEED, STASH_SORTER_MAX_SPEED)
+    ));
+    text.push_str(&format!("RuleCount={}\n", rules.len()));
+    text.push_str(&format!("BlacklistCount={}\n\n", blacklist.len()));
+
+    let calibration = normalize_stash_sorter_calibration(calibration);
+    let protected_cells = normalize_stash_sorter_protected_cells(protected_cells);
+    text.push_str("[Calibration]\n");
+    text.push_str(&format!(
+        "Enabled={}\n",
+        if calibration.enabled { 1 } else { 0 }
+    ));
+    text.push_str(&format!("Left={:.2}\n", calibration.left));
+    text.push_str(&format!("Top={:.2}\n", calibration.top));
+    text.push_str(&format!("CellWidth={:.2}\n", calibration.cell_width));
+    text.push_str(&format!("CellHeight={:.2}\n", calibration.cell_height));
+    text.push_str(&format!(
+        "ProtectedCellCount={}\n\n",
+        protected_cells.len()
+    ));
+
+    text.push_str("[Rules]\n");
+    for (index, rule) in rules.iter().enumerate() {
+        let match_type = sanitize_ini_value(&rule.match_type);
+        let match_value = sanitize_ini_value(&rule.match_value);
+        let target_tab = rule.target_tab.clamp(1, STASH_SORTER_SHARED_TAB_COUNT);
+        text.push_str(&format!(
+            "Rule{}={}|{}|{}|{}\n",
+            index,
+            if rule.enabled { 1 } else { 0 },
+            match_type,
+            match_value,
+            target_tab
+        ));
+    }
+
+    text.push_str("\n[Blacklist]\n");
+    for (index, entry) in blacklist.iter().enumerate() {
+        text.push_str(&format!("Item{}={}\n", index, sanitize_ini_value(entry)));
+    }
+
+    text.push_str("\n[ProtectedCells]\n");
+    for (index, cell) in protected_cells.iter().enumerate() {
+        text.push_str(&format!("Cell{}={},{}\n", index, cell.x, cell.y));
+    }
+
+    fs::write(STASH_SORTER_CONFIG_FILE, text)
+        .map_err(|e| format!("Failed to write stash sorter config: {}", e))?;
+    Ok(STASH_SORTER_CONFIG_FILE.to_string())
+}
+
+#[tauri::command]
+pub fn read_stash_sorter_log_tail(max_bytes: Option<u64>) -> Result<String, String> {
+    let max_bytes = max_bytes.unwrap_or(8192).clamp(1024, 65536);
+    let metadata = match fs::metadata(STASH_SORTER_LOG_FILE) {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(String::new()),
+    };
+    let len = metadata.len();
+    let start = len.saturating_sub(max_bytes);
+
+    let mut file = File::open(STASH_SORTER_LOG_FILE)
+        .map_err(|e| format!("Failed to open stash sorter log: {}", e))?;
+    file.seek(SeekFrom::Start(start))
+        .map_err(|e| format!("Failed to seek stash sorter log: {}", e))?;
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|e| format!("Failed to read stash sorter log: {}", e))?;
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+
+    if start > 0 {
+        if let Some(index) = text.find('\n') {
+            text = text[index + 1..].to_string();
+        }
+    }
+
+    Ok(text)
+}
+
+fn sanitize_ini_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| *ch != '\r' && *ch != '\n' && *ch != '|')
+        .take(160)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Load application settings from the store
@@ -1547,8 +1874,74 @@ fn merge_json_patch(base: &mut serde_json::Value, patch: serde_json::Value) {
             merge_holy_grail_found_json(base_obj, value);
             continue;
         }
+        if key == "dropsTrackerRecentItems" {
+            merge_drops_tracker_recent_items_json(base_obj, value);
+            continue;
+        }
         base_obj.insert(key.clone(), value.clone());
     }
+}
+
+fn merge_drops_tracker_recent_items_json(
+    base_obj: &mut serde_json::Map<String, serde_json::Value>,
+    patch_value: &serde_json::Value,
+) {
+    let Some(patch_items) = patch_value.as_array() else {
+        base_obj.insert("dropsTrackerRecentItems".to_string(), patch_value.clone());
+        return;
+    };
+
+    let base_value = base_obj
+        .entry("dropsTrackerRecentItems".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+    let Some(base_items) = base_value.as_array() else {
+        *base_value = patch_value.clone();
+        return;
+    };
+
+    let base_ids: HashSet<String> = base_items
+        .iter()
+        .filter_map(recent_item_id)
+        .collect();
+    let patch_has_new_item = patch_items
+        .iter()
+        .filter_map(recent_item_id)
+        .any(|id| !base_ids.contains(&id));
+
+    if !patch_has_new_item {
+        *base_value = patch_value.clone();
+        return;
+    }
+
+    let mut seen = HashSet::new();
+    let mut merged = Vec::new();
+    for item in patch_items.iter().chain(base_items.iter()) {
+        let Some(id) = recent_item_id(item) else {
+            continue;
+        };
+        if seen.insert(id) {
+            merged.push(item.clone());
+        }
+    }
+
+    merged.sort_by(|a, b| recent_item_timestamp_ms(b).cmp(&recent_item_timestamp_ms(a)));
+    merged.truncate(20);
+    *base_value = serde_json::Value::Array(merged);
+}
+
+fn recent_item_id(item: &serde_json::Value) -> Option<String> {
+    item.get("id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
+fn recent_item_timestamp_ms(item: &serde_json::Value) -> u64 {
+    item.get("timestampMs")
+        .or_else(|| item.get("timestamp_ms"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0)
 }
 
 fn merge_holy_grail_found_json(
@@ -1610,11 +2003,7 @@ fn should_write_routine_backups_now() -> bool {
     due
 }
 
-fn persist_settings_with_options(
-    app: &AppHandle,
-    settings: &AppSettings,
-    write_routine_backups: bool,
-) -> Result<(), String> {
+fn write_settings_to_store(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
     let store = app
         .store(SETTINGS_FILE)
         .map_err(|e| format!("Failed to open settings store: {}", e))?;
@@ -1627,6 +2016,16 @@ fn persist_settings_with_options(
     store
         .save()
         .map_err(|e| format!("Failed to save settings to disk: {}", e))?;
+
+    Ok(())
+}
+
+fn persist_settings_with_options(
+    app: &AppHandle,
+    settings: &AppSettings,
+    write_routine_backups: bool,
+) -> Result<(), String> {
+    write_settings_to_store(app, settings)?;
 
     let write_backup_mirrors = write_routine_backups && should_write_routine_backups_now();
 
@@ -2009,5 +2408,66 @@ mod tests {
             base["holyGrailFound"]["su:deadfall"]["firstFoundAt"],
             "2026-05-01T10:00:00.000Z",
         );
+    }
+
+    #[test]
+    fn settings_patch_merges_new_recent_items_without_losing_existing_items() {
+        let mut base = serde_json::json!({
+            "dropsTrackerRecentItems": [
+                {
+                    "id": "unique-1",
+                    "timestampMs": 200,
+                    "name": "Deadfall",
+                    "categories": ["unique"],
+                    "dropsTrackerCategories": ["unique"],
+                    "totalDropsTrackerCategories": ["unique"],
+                    "source": "hook"
+                }
+            ]
+        });
+        let patch = serde_json::json!({
+            "dropsTrackerRecentItems": [
+                {
+                    "id": "fate-card-1",
+                    "timestampMs": 300,
+                    "name": "The Scout",
+                    "categories": ["fateCard"],
+                    "dropsTrackerCategories": ["fateCard"],
+                    "totalDropsTrackerCategories": ["fateCard"],
+                    "source": "hook"
+                }
+            ]
+        });
+
+        merge_json_patch(&mut base, patch);
+
+        let recent = base["dropsTrackerRecentItems"].as_array().unwrap();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0]["id"], "fate-card-1");
+        assert_eq!(recent[1]["id"], "unique-1");
+    }
+
+    #[test]
+    fn settings_patch_allows_recent_items_to_be_cleared() {
+        let mut base = serde_json::json!({
+            "dropsTrackerRecentItems": [
+                {
+                    "id": "unique-1",
+                    "timestampMs": 200,
+                    "name": "Deadfall",
+                    "categories": ["unique"],
+                    "dropsTrackerCategories": ["unique"],
+                    "totalDropsTrackerCategories": ["unique"],
+                    "source": "hook"
+                }
+            ]
+        });
+        let patch = serde_json::json!({
+            "dropsTrackerRecentItems": []
+        });
+
+        merge_json_patch(&mut base, patch);
+
+        assert!(base["dropsTrackerRecentItems"].as_array().unwrap().is_empty());
     }
 }

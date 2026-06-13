@@ -3,7 +3,6 @@
   import { emit, listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
   import { Toggle, Button, HotkeyInput, SubTabs } from '../components';
-  import DropsTrackerHookPanel from '../components/DropsTrackerHookPanel.svelte';
   import IdentifiedDropsPanel from '../components/IdentifiedDropsPanel.svelte';
   import { settingsStore, lootHistoryStore, type HotkeyConfig } from '../stores';
   import {
@@ -22,7 +21,6 @@
 
   const subTabs = [
     { id: 'overview', label: 'Overview' },
-    { id: 'drops-hook', label: 'Drops Tracker Hook' },
     { id: 'identified-drops', label: 'Identified Drops' },
     { id: 'muling-mode', label: 'Muling Mode' },
   ];
@@ -55,6 +53,10 @@
   let totalDropsCount = $derived(
     Object.values(settingsStore.settings.totalDropsTrackerCounts).reduce((sum, n) => sum + (n ?? 0), 0),
   );
+
+  $effect(() => {
+    if (!subTabs.some((tab) => tab.id === activeSubTab)) activeSubTab = 'overview';
+  });
 
   let confirmMessage = $derived(
     pendingConfirm === 'total-drops'
@@ -519,8 +521,6 @@
 
     </div>
   </div>
-  {:else if activeSubTab === 'drops-hook'}
-  <DropsTrackerHookPanel />
   {:else if activeSubTab === 'identified-drops'}
   <IdentifiedDropsPanel />
   {:else}

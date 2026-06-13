@@ -19,7 +19,7 @@
     import { materialNameFromDrop } from "../lib/item-sounds";
     import { materialTrackerNameFromDrop } from "../lib/material-tracker";
     import type { ItemDrop } from "../lib/item-drop";
-    import { AchievementsTab, FateCardsTab, GeneralTab, HomeTab, LootFilterTab, OverlaysTab, SoundsTab, DropsTrackerTab, HolyGrailTab, SoeWikiTab } from "./index";
+    import { AchievementsTab, FateCardsTab, GeneralTab, HomeTab, LootFilterTab, OverlaysTab, SoundsTab, DropsTrackerTab, HolyGrailTab, SoeWikiTab, StashSorterTab } from "./index";
 
     let scannerStatus = $state<
         "stopped" | "starting" | "running" | "stopping" | "error"
@@ -49,6 +49,15 @@
         message: string;
     }
 
+    interface DropHookStatus {
+        projectD2Dir: string;
+        projectD2DirExists: boolean;
+        grailInstalled: boolean;
+        hookNeedsUpdate: boolean;
+        unknownDllPresent: boolean;
+        message: string;
+    }
+
     // Grail drop log watcher state
     const GAME_ENTRY_TRACKING_SUPPRESSION_MS = 10_000;
     const MAX_LIVE_KILL_DELTA = 50_000;
@@ -67,13 +76,18 @@
     let masterSyncing = $state(false);
     let saveExitSyncTimer: ReturnType<typeof setTimeout> | null = null;
     let saveExitMenuEnteredAtMs = 0;
+    let headerHookStatus = $state<DropHookStatus | null>(null);
+    let headerHookBusy = $state(false);
+    let headerHookMessage = $state('');
     let syncUiActive = $derived(masterSyncing || quietSyncBusy);
     let syncUiLabel = $derived(masterSyncing ? "Syncing All" : quietSyncBusy ? "Syncing" : quietSyncPending ? "Queued" : "Sync All");
+    let headerHookActionLabel = $derived(hookHeaderActionLabel());
 
     const tabs = [
         { id: "home", label: "Home" },
         { id: "general", label: "General" },
         { id: "overlays", label: "Overlays" },
+        { id: "stash-sorter", label: "Stash Sorter" },
         { id: "drops-tracker", label: "Drops Tracker" },
         { id: "lootfilter", label: "Loot Filter" },
         { id: "sounds", label: "Sounds" },
@@ -135,6 +149,49 @@
                     scheduleQuietSync("save-exit");
                 }
             }, SAVE_EXIT_CONFIRM_MS);
+        }
+    }
+
+    function hookHeaderActionLabel(): string {
+        if (!headerHookStatus) return "";
+        if (headerHookStatus.hookNeedsUpdate) return "Update Hook";
+        if (headerHookStatus.unknownDllPresent || !headerHookStatus.grailInstalled) return "Install Hook";
+        return "";
+    }
+
+    async function refreshHeaderHookStatus(): Promise<void> {
+        try {
+            const status = await invoke<DropHookStatus>("get_drop_hook_status_for_path", {
+                projectD2Dir: settingsStore.settings.projectD2Path,
+            });
+            headerHookStatus = status;
+            if (!settingsStore.settings.projectD2Path && status.projectD2DirExists) {
+                settingsStore.setProjectD2Path(status.projectD2Dir);
+            }
+            headerHookMessage = '';
+        } catch (error) {
+            headerHookMessage = `Could not check hook status: ${error}`;
+        }
+    }
+
+    async function installHeaderHook(): Promise<void> {
+        if (headerHookBusy) return;
+        headerHookBusy = true;
+        headerHookMessage = headerHookStatus?.hookNeedsUpdate ? "Updating SoE Hook..." : "Installing SoE Hook...";
+        try {
+            const status = await invoke<DropHookStatus>("install_drop_hook_for_path", {
+                projectD2Dir: settingsStore.settings.projectD2Path,
+            });
+            headerHookStatus = status;
+            if (!settingsStore.settings.projectD2Path && status.projectD2DirExists) {
+                settingsStore.setProjectD2Path(status.projectD2Dir);
+            }
+            headerHookMessage = status.message;
+        } catch (error) {
+            headerHookMessage = `Hook install failed: ${error}`;
+            await refreshHeaderHookStatus();
+        } finally {
+            headerHookBusy = false;
         }
     }
 
@@ -325,6 +382,16 @@
         return String(item.item_code || item.itemCode || "").trim().toLowerCase();
     }
 
+    const UNIQUE_SET_TRACKING_CATEGORIES = new Set<DropTrackerCategoryKey>([
+        "unique",
+        "hellforged",
+        "sets",
+    ]);
+
+    function specificNonGrailCategories(categories: DropTrackerCategoryKey[]): DropTrackerCategoryKey[] {
+        return categories.filter((category) => !UNIQUE_SET_TRACKING_CATEGORIES.has(category));
+    }
+
     function isPlaceholderItemName(value: unknown, item?: ItemDrop): boolean {
         const raw = String(value ?? "").trim();
         if (!raw) return true;
@@ -396,10 +463,33 @@
         if (grailItem?.category === "hatredOrbs") return ["hatredOrb"];
         if (grailItem?.category === "essences") return ["essence"];
         if (grailItem?.category === "ascendancy") return ["ascendancy"];
+        const categorized = categorizeDrop(item);
         if (hasTrustedExactUniqueSetName(item)) {
-            return categorizeDrop(item);
+            return categorized;
         }
+        const specificCategories = specificNonGrailCategories(categorized);
+        if (specificCategories.length > 0) return specificCategories;
         return String(item.quality ?? "").toLowerCase() === "set" ? ["sets"] : ["unique"];
+    }
+
+    function specificDropDisplayName(item: ItemDrop): string {
+        const material = materialNameFromDrop(item);
+        if (material) return material;
+        for (const candidate of [
+            item.canonical_name,
+            item.canonicalName,
+            item.base_name,
+            item.name,
+        ]) {
+            if (!candidate || isPlaceholderItemName(candidate, item)) continue;
+            const cleanName = cleanTrackedItemName(candidate);
+            if (cleanName && !isPlaceholderItemName(cleanName, item)) {
+                return canonicalTrackedItemName(cleanName, inferHolyGrailCategory(item));
+            }
+        }
+        const baseName = baseNameFromCode(item);
+        if (baseName) return baseName;
+        return "Tracked item";
     }
 
     function recordCollectedDrop(
@@ -419,9 +509,12 @@
         }
 
         const categories = trackingCategoriesForDrop(item);
+        const hasSpecificNonGrailCategory = specificNonGrailCategories(categories).length > 0;
         const displayName = hasTrustedExactUniqueSetName(item)
             ? trackedItemDisplayName(item)
-            : `Unverified ${genericDropDisplayName(item)}`;
+            : hasSpecificNonGrailCategory
+                ? specificDropDisplayName(item)
+                : `Unverified ${genericDropDisplayName(item)}`;
         const trackerMaterialName = materialTrackerNameFromDrop(item);
         const matchedMaterialName = materialNameFromDrop(item);
         const materialName =
@@ -788,6 +881,10 @@
         restoreWindowState();
         itemsDictionaryStore.init();
         void baselineHookDropLogCursor();
+        void refreshHeaderHookStatus();
+        const hookStatusTimer = globalThis.setInterval(() => {
+            void refreshHeaderHookStatus();
+        }, 30000);
 
         // Scanner / game status (kept for overlay compatibility)
         listen<string>("scanner-status", (event) => {
@@ -843,6 +940,7 @@
         return () => {
             if (quietSyncTimer) clearTimeout(quietSyncTimer);
             if (saveExitSyncTimer) clearTimeout(saveExitSyncTimer);
+            globalThis.clearInterval(hookStatusTimer);
             if (saveTimeout) clearTimeout(saveTimeout);
             unlisteners.forEach((u) => u());
             itemsDictionaryStore.destroy();
@@ -876,6 +974,19 @@
                 </button>
             </div>
 
+            {#if headerHookActionLabel}
+                <button
+                    class="hook-action-card"
+                    class:updating={headerHookBusy}
+                    type="button"
+                    disabled={headerHookBusy}
+                    title={headerHookMessage || headerHookStatus?.message || 'Install or update the SoE Hook'}
+                    onclick={installHeaderHook}
+                >
+                    <strong>{headerHookBusy ? 'Working' : headerHookActionLabel}</strong>
+                </button>
+            {/if}
+
             <div class="status-bar">
                 <div class="status-item">
                     <span class="status-label">Diablo II</span>
@@ -902,6 +1013,8 @@
                     <GeneralTab />
                 {:else if tab === "overlays"}
                     <OverlaysTab />
+                {:else if tab === "stash-sorter"}
+                    <StashSorterTab />
                 {:else if tab === "lootfilter"}
                     <LootFilterTab />
                 {:else if tab === "sounds"}
@@ -1059,6 +1172,41 @@
     }
 
     .sync-card strong {
+        color: inherit;
+        font-family: var(--font-display);
+        font-size: 13px;
+        line-height: 1;
+        text-transform: uppercase;
+        letter-spacing: 0;
+    }
+
+    .hook-action-card {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 112px;
+        height: 36px;
+        padding: 0 var(--space-3);
+        border: 1px solid #77d8ff;
+        border-radius: var(--radius-md);
+        background: linear-gradient(180deg, #d5f3ff 0%, #83d4f6 100%);
+        color: #06121a;
+        cursor: pointer;
+        text-align: center;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62), 0 0 14px rgba(120, 210, 255, 0.16);
+    }
+
+    .hook-action-card:hover:not(:disabled) {
+        border-color: #c9f3ff;
+        background: linear-gradient(180deg, #effbff 0%, #9ee4ff 100%);
+    }
+
+    .hook-action-card:disabled {
+        cursor: wait;
+        opacity: 0.86;
+    }
+
+    .hook-action-card strong {
         color: inherit;
         font-family: var(--font-display);
         font-size: 13px;

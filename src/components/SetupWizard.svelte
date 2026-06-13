@@ -55,7 +55,7 @@
   const steps: Array<{ id: StepId; label: string }> = [
     { id: 'welcome', label: 'Welcome' },
     { id: 'launcher', label: 'Launcher' },
-    { id: 'drops-hook', label: 'Install Drops Tracker' },
+    { id: 'drops-hook', label: 'Install SoE Hook' },
     { id: 'filter', label: 'Loot Filter' },
     { id: 'stash', label: 'Shared Stash & Stats' },
     { id: 'notifications', label: 'Notifications & Sounds' },
@@ -202,7 +202,7 @@
         projectD2PathDraft = hookStatus.projectD2Dir;
       }
     } catch (error) {
-      message = `Could not check Drops Tracker Hook: ${error}`;
+      message = `Could not check SoE Hook: ${error}`;
     } finally {
       busy = '';
     }
@@ -242,7 +242,7 @@
 
   async function installHook(): Promise<void> {
     busy = 'drops-hook-install';
-    message = hookStatus?.hookNeedsUpdate ? 'Updating Drops Tracker Hook...' : 'Installing Drops Tracker Hook...';
+    message = hookStatus?.hookNeedsUpdate ? 'Updating SoE Hook...' : 'Installing SoE Hook...';
     try {
       hookStatus = await invoke<DropHookStatus>('install_drop_hook_for_path', { projectD2Dir: settingsStore.settings.projectD2Path });
       if (!settingsStore.settings.projectD2Path && hookStatus.projectD2DirExists) {
@@ -267,15 +267,15 @@
   }
 
   function installHookButtonLabel(): string {
-    if (hookStatus?.hookNeedsUpdate) return 'Update Drops Tracker Hook';
-    if (hookStatus?.unknownDllPresent) return 'Replace with Drops Tracker Hook';
+    if (hookStatus?.hookNeedsUpdate) return 'Update SoE Hook';
+    if (hookStatus?.unknownDllPresent) return 'Replace with SoE Hook';
     if (hookStatus?.grailInstalled) return 'Installed';
-    return 'Install Drops Tracker Hook';
+    return 'Install SoE Hook';
   }
 
   function hookDetailsMessage(): string {
     if (!hookStatus) return 'Checking status...';
-    if (hookStatus.hookNeedsUpdate) return 'Drops Tracker Hook needs an update for this app version.';
+    if (hookStatus.hookNeedsUpdate) return 'SoE Hook needs an update for this app version.';
     if (hookStatus.unknownDllPresent) return hookStatus.message;
     return hookStatus.message;
   }
@@ -389,7 +389,7 @@
   function finish(): void {
     if (!hookStatus?.grailInstalled) {
       activeStep = 'drops-hook';
-      message = 'Install Drops Tracker Hook before finishing setup.';
+      message = 'Install SoE Hook before finishing setup.';
       return;
     }
     settingsStore.set('setupWizardCompleted', true);
@@ -474,8 +474,8 @@
         {:else if activeStep === 'drops-hook'}
           <div class="step-grid">
             <div class="step-card">
-              <h3>Install Drops Tracker</h3>
-              <p>Installs the required SoE <code>ijl11.dll</code> drop hook so drops can feed the Drops Tracker, Holy Grail, Fate Cards, materials, runes, sounds, and overlays.</p>
+              <h3>Install SoE Hook</h3>
+              <p>Installs the required SoE <code>ijl11.dll</code> hook so drops, Holy Grail, Fate Cards, materials, runes, sounds, overlays, Identified Drops, and Stash Sorter can work from one shared hook.</p>
               <div class="status-card" class:good={hookStatus?.grailInstalled}>
                 <strong>{hookStatusLabel()}</strong>
                 <span>{hookDetailsMessage()}</span>

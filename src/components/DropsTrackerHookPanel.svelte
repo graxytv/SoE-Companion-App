@@ -32,6 +32,16 @@
     message: string;
   }
 
+  let {
+    showInstallAction = true,
+    title = 'SoE Hook Configuration',
+    description = 'Required for accurate drop tracking, Holy Grail updates, Fate Cards, material/rune counts, item sounds, overlays, and Stash Sorter.',
+  } = $props<{
+    showInstallAction?: boolean;
+    title?: string;
+    description?: string;
+  }>();
+
   let dropHookStatus = $state<DropHookStatus | null>(null);
   let hookBusy = $state(false);
   let hookMessage = $state('');
@@ -53,7 +63,7 @@
       }
       hookMessage = '';
     } catch (error) {
-      hookMessage = `Could not check Drops Tracker Hook: ${error}`;
+      hookMessage = `Could not check SoE Hook: ${error}`;
     } finally {
       hookBusy = false;
     }
@@ -97,7 +107,7 @@
 
   async function installHook(): Promise<void> {
     hookBusy = true;
-    hookMessage = dropHookStatus?.hookNeedsUpdate ? 'Updating Drops Tracker Hook...' : 'Installing Drops Tracker Hook...';
+    hookMessage = dropHookStatus?.hookNeedsUpdate ? 'Updating SoE Hook...' : 'Installing SoE Hook...';
     try {
       dropHookStatus = await invoke<DropHookStatus>('install_drop_hook_for_path', {
         projectD2Dir: settingsStore.settings.projectD2Path,
@@ -137,21 +147,21 @@
 
   function statusMessage(): string {
     if (hookMessage) return hookMessage;
-    if (!dropHookStatus) return 'Checking Drops Tracker Hook status...';
+    if (!dropHookStatus) return 'Checking SoE Hook status...';
     if (!dropHookStatus.projectD2DirExists) return 'ProjectD2 folder was not found.';
     if (dropHookStatus.hookNeedsUpdate) {
-      return 'Drops Tracker Hook is installed but needs an update for this app version.';
+      return 'SoE Hook is installed but needs an update for this app version.';
     }
     if (dropHookStatus.unknownDllPresent) {
       return 'An ijl11.dll is present, but it is not recognized as a SoE Companion hook. Installing will back it up first.';
     }
     if (dropHookStatus.grailInstalled) {
-      return dropHookStatus.message || 'Drops Tracker Hook is installed.';
+      return dropHookStatus.message || 'SoE Hook is installed.';
     }
     if (dropHookStatus.installed) {
-      return 'Shared SoE hook is present, but Drops Tracker Hook is not enabled.';
+      return 'Shared SoE Hook is present, but Companion tracking is not enabled.';
     }
-    return 'Drops Tracker Hook is required for SoE Companion drop tracking.';
+    return 'SoE Hook is required for SoE Companion features.';
   }
 
   function statusLabel(): string {
@@ -163,10 +173,10 @@
   }
 
   function installButtonLabel(): string {
-    if (dropHookStatus?.hookNeedsUpdate) return 'Update Drops Tracker Hook';
-    if (dropHookStatus?.unknownDllPresent) return 'Replace with Drops Tracker Hook';
+    if (dropHookStatus?.hookNeedsUpdate) return 'Update Hook';
+    if (dropHookStatus?.unknownDllPresent) return 'Replace Hook';
     if (dropHookStatus?.grailInstalled) return 'Installed';
-    return 'Install Drops Tracker Hook';
+    return 'Install Hook';
   }
 
   function hookDllStatus(): string {
@@ -181,9 +191,9 @@
 <div class="settings-section drops-hook-panel">
   <div class="panel-heading">
     <div>
-      <h2 class="section-title">Install Drops Tracker Hook</h2>
+      <h2 class="section-title">{title}</h2>
       <p class="section-description">
-        Required for accurate drop tracking, Holy Grail updates, Fate Cards, material/rune counts, and tracker overlays. Close Diablo II before installing or changing hook settings.
+        {description} Close Diablo II before installing, updating, restoring, or changing hook settings.
       </p>
     </div>
     <span class="required-badge">Required</span>
@@ -202,9 +212,11 @@
       </div>
     </div>
     <div class="hook-actions">
-      <Button variant="primary" size="sm" disabled={hookBusy || (dropHookStatus?.grailInstalled && !dropHookStatus?.hookNeedsUpdate)} onclick={installHook}>
-        {installButtonLabel()}
-      </Button>
+      {#if showInstallAction}
+        <Button variant="primary" size="sm" disabled={hookBusy || (dropHookStatus?.grailInstalled && !dropHookStatus?.hookNeedsUpdate)} onclick={installHook}>
+          {installButtonLabel()}
+        </Button>
+      {/if}
       {#if dropHookStatus?.canRestoreOriginal}
         <Button variant="danger" size="sm" disabled={hookBusy} onclick={restoreOriginalDll}>Restore Original ijl11.dll</Button>
       {/if}
@@ -238,7 +250,7 @@
   </div>
 
   <p class="hook-note">
-    Identified Drops can be enabled separately in the Identified Drops sub-tab after the required Drops Tracker Hook is installed.
+    Identified Drops can be enabled separately in the Identified Drops sub-tab after the required SoE Hook is installed.
   </p>
 </div>
 

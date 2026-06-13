@@ -6,6 +6,7 @@ export { default as TrackerOverlayCardWindow } from './TrackerOverlayCardWindow.
 export { default as HomeTab } from './HomeTab.svelte';
 export { default as GeneralTab } from './GeneralTab.svelte';
 export { default as OverlaysTab } from './OverlaysTab.svelte';
+export { default as StashSorterTab } from './StashSorterTab.svelte';
 export { default as LootFilterTab } from './LootFilterTab.svelte';
 export { default as NotificationsTab } from './NotificationsTab.svelte';
 export { default as SoundsTab } from './SoundsTab.svelte';

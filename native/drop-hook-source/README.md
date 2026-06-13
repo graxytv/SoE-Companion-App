@@ -6,7 +6,7 @@ Build with MSYS2 MinGW 32-bit:
 
 ```powershell
 $env:Path = "C:\msys64\mingw32\bin;$env:Path"
-g++ -O2 -m32 -std=c++14 -static -static-libgcc -static-libstdc++ -shared -o build\ijl11.dll ijl11_grail.cpp ijl11.def -lkernel32 -luser32 -lshlwapi
+g++ -O2 -m32 -std=c++14 -static -static-libgcc -static-libstdc++ -shared -o build\ijl11.dll ijl11_grail.cpp ijl11.def -lkernel32 -luser32 -lgdi32 -lshlwapi
 ```
 
 After building, copy `build\ijl11.dll` to `src-tauri\resources\ijl11.dll`
